@@ -285,7 +285,7 @@ public sealed class SdVa01Service
         sb.AppendLine("' UGES SD Kontrol - Tam VA01 Taslak Doldurucu (KAYDETMEZ - Kontrol Kullanicidadir)");
         sb.AppendLine("Option Explicit");
         sb.AppendLine("On Error Resume Next");
-        sb.AppendLine("Dim SapGuiAuto, application, connection, session, tbl, i, c, cell, cname");
+        sb.AppendLine("Dim SapGuiAuto, application, connection, session, tbl, i, c, cell, cname, svCode, taCode");
         sb.AppendLine("Set SapGuiAuto = GetObject(\"SAPGUI\")");
         sb.AppendLine("If Err.Number <> 0 Then MsgBox \"Acik bir SAP GUI oturumu bulunamadi. Lutfen once SAP Logon ile giris yapin.\", 48, \"UGES SD Kontrol\" : WScript.Quit 1");
         sb.AppendLine("Set application = SapGuiAuto.GetScriptingEngine");
@@ -294,21 +294,109 @@ public sealed class SdVa01Service
         sb.AppendLine("Err.Clear");
         sb.AppendLine();
         sb.AppendLine("Sub DismissPopups()");
-        sb.AppendLine("  Dim stepIdx, pTitle");
+        sb.AppendLine("  Dim stepIdx");
         sb.AppendLine("  For stepIdx = 1 To 20");
         sb.AppendLine("    Err.Clear");
-        sb.AppendLine("    session.findById(\"wnd[1]/tbar[0]/btn[0]\").press");
-        sb.AppendLine("    If Err.Number = 0 Then WScript.Sleep 250 Else");
+        sb.AppendLine("    session.findById(\"wnd[2]/tbar[0]/btn[0]\").press");
+        sb.AppendLine("    If Err.Number = 0 Then");
+        sb.AppendLine("      WScript.Sleep 250");
+        sb.AppendLine("    Else");
         sb.AppendLine("      Err.Clear");
-        sb.AppendLine("      If UCase(session.Info.Program) = \"SAPLATPC\" Then");
-        sb.AppendLine("        session.findById(\"wnd[0]/tbar[0]/btn[0]\").press");
-        sb.AppendLine("        WScript.Sleep 300");
+        sb.AppendLine("      session.findById(\"wnd[1]/tbar[0]/btn[0]\").press");
+        sb.AppendLine("      If Err.Number = 0 Then");
+        sb.AppendLine("        WScript.Sleep 250");
         sb.AppendLine("      Else");
-        sb.AppendLine("        Exit For");
+        sb.AppendLine("        Err.Clear");
+        sb.AppendLine("        If UCase(session.Info.Program) = \"SAPLATPC\" Then");
+        sb.AppendLine("          session.findById(\"wnd[0]/tbar[0]/btn[0]\").press");
+        sb.AppendLine("          WScript.Sleep 300");
+        sb.AppendLine("        Else");
+        sb.AppendLine("          Exit For");
+        sb.AppendLine("        End If");
         sb.AppendLine("      End If");
         sb.AppendLine("    End If");
         sb.AppendLine("  Next");
         sb.AppendLine("End Sub");
+        sb.AppendLine();
+        sb.AppendLine("Function SetAdInContainer(container, searchPat)");
+        sb.AppendLine("  SetAdInContainer = False");
+        sb.AppendLine("  Dim idx, ch");
+        sb.AppendLine("  Err.Clear");
+        sb.AppendLine("  For idx = 0 To container.Children.Count - 1");
+        sb.AppendLine("    Set ch = container.Children(CLng(idx))");
+        sb.AppendLine("    If Err.Number = 0 Then");
+        sb.AppendLine("      If InStr(UCase(ch.Name), \"G_SELFLD_TAB-LOW\") > 0 Then");
+        sb.AppendLine("        If Right(ch.Id, 3) = \",3]\" Or Right(ch.Id, 4) = \", 3]\" Then");
+        sb.AppendLine("          ch.text = searchPat");
+        sb.AppendLine("          SetAdInContainer = True");
+        sb.AppendLine("        Else");
+        sb.AppendLine("          ch.text = \"\"");
+        sb.AppendLine("        End If");
+        sb.AppendLine("      ElseIf ch.Children.Count > 0 Then");
+        sb.AppendLine("        If SetAdInContainer(ch, searchPat) Then SetAdInContainer = True");
+        sb.AppendLine("      End If");
+        sb.AppendLine("    End If");
+        sb.AppendLine("    Err.Clear");
+        sb.AppendLine("  Next");
+        sb.AppendLine("End Function");
+        sb.AppendLine();
+        sb.AppendLine("Function ResolveCustomerF4(fieldId, rawVal)");
+        sb.AppendLine("  ResolveCustomerF4 = \"\"");
+        sb.AppendLine("  If Trim(rawVal) = \"\" Then Exit Function");
+        sb.AppendLine("  If IsNumeric(Trim(rawVal)) Then");
+        sb.AppendLine("    session.findById(fieldId).text = Trim(rawVal)");
+        sb.AppendLine("    ResolveCustomerF4 = Trim(rawVal)");
+        sb.AppendLine("    Exit Function");
+        sb.AppendLine("  End If");
+        sb.AppendLine("  Dim cleanName, pat, w1, idx, ch");
+        sb.AppendLine("  cleanName = Replace(Replace(Trim(rawVal), \"#\", \"\"), \"*\", \"\")");
+        sb.AppendLine("  pat = Left(cleanName, 24) & \"*\"");
+        sb.AppendLine("  Err.Clear");
+        sb.AppendLine("  session.findById(fieldId).text = \"\"");
+        sb.AppendLine("  session.findById(fieldId).setFocus");
+        sb.AppendLine("  session.findById(\"wnd[0]\").sendVKey 4");
+        sb.AppendLine("  WScript.Sleep 500");
+        sb.AppendLine("  Set w1 = session.findById(\"wnd[1]\")");
+        sb.AppendLine("  If Err.Number <> 0 Then Exit Function");
+        sb.AppendLine("  Err.Clear");
+        sb.AppendLine("  session.findById(\"wnd[1]/usr/tabsG_SELONETABSTRIP/tabpTAB001\").select");
+        sb.AppendLine("  WScript.Sleep 200");
+        sb.AppendLine("  Err.Clear");
+        sb.AppendLine("  Set w1 = session.findById(\"wnd[1]/usr\")");
+        sb.AppendLine("  If Not SetAdInContainer(w1, pat) Then");
+        sb.AppendLine("    session.findById(\"wnd[1]/tbar[0]/btn[12]\").press");
+        sb.AppendLine("    Exit Function");
+        sb.AppendLine("  End If");
+        sb.AppendLine("  session.findById(\"wnd[1]/tbar[0]/btn[0]\").press");
+        sb.AppendLine("  WScript.Sleep 550");
+        sb.AppendLine("  Err.Clear");
+        sb.AppendLine("  session.findById(\"wnd[2]/tbar[0]/btn[0]\").press");
+        sb.AppendLine("  If Err.Number = 0 Then");
+        sb.AppendLine("    WScript.Sleep 200");
+        sb.AppendLine("    session.findById(\"wnd[1]/tbar[0]/btn[12]\").press");
+        sb.AppendLine("    Exit Function");
+        sb.AppendLine("  End If");
+        sb.AppendLine("  Err.Clear");
+        sb.AppendLine("  Set w1 = session.findById(\"wnd[1]/usr\")");
+        sb.AppendLine("  If Err.Number = 0 Then");
+        sb.AppendLine("    For idx = 0 To w1.Children.Count - 1");
+        sb.AppendLine("      Set ch = w1.Children(CLng(idx))");
+        sb.AppendLine("      If InStr(ch.Id, \"/lbl[\") > 0 And Right(ch.Id, 3) = \",3]\" Then");
+        sb.AppendLine("        ch.setFocus");
+        sb.AppendLine("        session.findById(\"wnd[1]\").sendVKey 2");
+        sb.AppendLine("        WScript.Sleep 350");
+        sb.AppendLine("        Exit For");
+        sb.AppendLine("      End If");
+        sb.AppendLine("    Next");
+        sb.AppendLine("    Err.Clear");
+        sb.AppendLine("    session.findById(\"wnd[1]/tbar[0]/btn[0]\").press");
+        sb.AppendLine("    WScript.Sleep 300");
+        sb.AppendLine("    Err.Clear");
+        sb.AppendLine("    session.findById(\"wnd[1]/tbar[0]/btn[12]\").press");
+        sb.AppendLine("  End If");
+        sb.AppendLine("  Err.Clear");
+        sb.AppendLine("  ResolveCustomerF4 = Trim(session.findById(fieldId).text)");
+        sb.AppendLine("End Function");
         sb.AppendLine();
         sb.AppendLine("Sub SetCol(rowIdx, targetName, val)");
         sb.AppendLine("  If val = \"\" Then Exit Sub");
@@ -341,10 +429,17 @@ public sealed class SdVa01Service
         sb.AppendLine("WScript.Sleep 600");
         sb.AppendLine("Call DismissPopups()");
 
-        if (!string.IsNullOrEmpty(T("siparisVeren")))
-            sb.AppendLine($"session.findById(\"wnd[0]/usr/subSUBSCREEN_HEADER:SAPMV45A:4021/subPART-SUB:SAPMV45A:4701/ctxtKUAGV-KUNNR\").text = \"{Esc(T("siparisVeren"))}\"");
-        if (!string.IsNullOrEmpty(T("maliTeslimAlan")))
-            sb.AppendLine($"session.findById(\"wnd[0]/usr/subSUBSCREEN_HEADER:SAPMV45A:4021/subPART-SUB:SAPMV45A:4701/ctxtKUWEV-KUNNR\").text = \"{Esc(T("maliTeslimAlan"))}\"");
+        var svRaw = T("siparisVeren");
+        var taRaw = T("maliTeslimAlan");
+        if (!string.IsNullOrEmpty(svRaw))
+            sb.AppendLine($"svCode = ResolveCustomerF4(\"wnd[0]/usr/subSUBSCREEN_HEADER:SAPMV45A:4021/subPART-SUB:SAPMV45A:4701/ctxtKUAGV-KUNNR\", \"{Esc(svRaw)}\")");
+        if (!string.IsNullOrEmpty(taRaw))
+        {
+            if (string.Equals(taRaw.Trim(), svRaw.Trim(), StringComparison.OrdinalIgnoreCase))
+                sb.AppendLine("If svCode <> \"\" Then session.findById(\"wnd[0]/usr/subSUBSCREEN_HEADER:SAPMV45A:4021/subPART-SUB:SAPMV45A:4701/ctxtKUWEV-KUNNR\").text = svCode");
+            else
+                sb.AppendLine($"taCode = ResolveCustomerF4(\"wnd[0]/usr/subSUBSCREEN_HEADER:SAPMV45A:4021/subPART-SUB:SAPMV45A:4701/ctxtKUWEV-KUNNR\", \"{Esc(taRaw)}\")");
+        }
         if (!string.IsNullOrEmpty(T("sasNo")))
             sb.AppendLine($"session.findById(\"wnd[0]/usr/subSUBSCREEN_HEADER:SAPMV45A:4021/txtVBKD-BSTKD\").text = \"{Esc(T("sasNo"))}\"");
         if (!string.IsNullOrEmpty(T("sasTarihi")))
