@@ -1,10 +1,18 @@
+# Derleme gecici klasorleri ve agir paketler gite girmez
 bin/
 obj/
 node_modules/
 dist/
-app/
-backend/wwwroot/
+*.pdb
+__pycache__/
+*.pyc
+
+# Kisisel ortam ayarlari (.env) ve hassas Excel/Word dosyalari gite girmez (.env.example girer)
 .env
+app/.env
 *.xlsx
 *.docx
 ~$*
+
+# NOT: app/ ve backend/wwwroot/ klasorleri BILEREK gite dahil edilir ki
+# hedef bilgisayarda .NET SDK veya Node.js olmadan git pull sonrasi start.bat dogrudan calissin!

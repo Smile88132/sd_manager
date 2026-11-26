@@ -1,47 +1,66 @@
 namespace SdKontrol.API.Services;
 
 /// <summary>
-/// SD/.env dosyasını hem geliştirme (SD/backend) hem de yayınlanmış standalone (SD/app veya SD/) konumundan otomatik bulup okur.
+/// Tüm DB, Python, SAP ve port ayarlarını doğrudan SD/.env (veya SD/app/.env) dosyasından okur.
+/// app/appsettings.json içinde veritabanı şifresi veya sabit bağlantı cümlesi tutulmaz.
 /// </summary>
 public sealed class EnvConfig
 {
     private readonly Dictionary<string, string> _env = new(StringComparer.OrdinalIgnoreCase);
-    private readonly IConfiguration _cfg;
     public string SdRootDir { get; }
     public string AppDir { get; }
     public string EnvFilePath { get; }
 
-    public EnvConfig(IConfiguration cfg, IWebHostEnvironment hostEnv)
+    public EnvConfig(IWebHostEnvironment hostEnv)
     {
-        _cfg = cfg;
         AppDir = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         SdRootDir = ResolveSdRoot(hostEnv.ContentRootPath, AppDir);
-        EnvFilePath = Path.Combine(SdRootDir, ".env");
-        LoadDotEnv(EnvFilePath);
+
+        // Önce SD/.env okunur; eğer kullanıcı app/.env içine de koyduysa o da desteklenir
+        var rootEnv = Path.Combine(SdRootDir, ".env");
+        var appEnv = Path.Combine(AppDir, ".env");
+        if (File.Exists(rootEnv))
+        {
+            EnvFilePath = rootEnv;
+            LoadDotEnv(rootEnv);
+        }
+        else if (File.Exists(appEnv))
+        {
+            EnvFilePath = appEnv;
+            LoadDotEnv(appEnv);
+        }
+        else
+        {
+            EnvFilePath = rootEnv;
+        }
     }
 
     private static string ResolveSdRoot(string contentRoot, string baseDir)
     {
-        // Aday klasörler: önce çalışma dizini ve üstü, sonra exe dizini ve üstü (.env veya *.xlsx olan yer)
+        // SD/app/SdKontrol.API.exe çalışırken bir üst klasör SD/ klasörüdür (.env ve start.bat oradadır)
         var candidates = new[]
         {
+            Path.GetFullPath(Path.Combine(baseDir, "..")),
             contentRoot,
             Path.GetFullPath(Path.Combine(contentRoot, "..")),
-            baseDir,
-            Path.GetFullPath(Path.Combine(baseDir, ".."))
+            baseDir
         };
 
         foreach (var c in candidates)
         {
-            if (Directory.Exists(c) && (File.Exists(Path.Combine(c, ".env")) || File.Exists(Path.Combine(c, ".env.example"))))
+            if (Directory.Exists(c) && (
+                File.Exists(Path.Combine(c, ".env")) ||
+                File.Exists(Path.Combine(c, "start.bat")) ||
+                File.Exists(Path.Combine(c, ".env.example"))))
+            {
                 return c;
+            }
         }
-        return Path.GetFullPath(Path.Combine(contentRoot, ".."));
+        return Path.GetFullPath(Path.Combine(baseDir, ".."));
     }
 
     private void LoadDotEnv(string path)
     {
-        if (!File.Exists(path)) return;
         foreach (var raw in File.ReadAllLines(path))
         {
             var line = raw.Trim();
@@ -56,9 +75,10 @@ public sealed class EnvConfig
 
     public string Get(string key, string fallback = "")
     {
+        // .env dosyası her zaman birincil kaynaktır; yoksa işletim sistemi ortam değişkenine ve varsayılana düşer
+        if (_env.TryGetValue(key, out var v) && !string.IsNullOrWhiteSpace(v)) return v;
         var osVal = Environment.GetEnvironmentVariable(key);
         if (!string.IsNullOrWhiteSpace(osVal)) return osVal.Trim();
-        if (_env.TryGetValue(key, out var v) && !string.IsNullOrWhiteSpace(v)) return v;
         return fallback;
     }
 
@@ -69,21 +89,11 @@ public sealed class EnvConfig
     public int DbPort => GetInt("DB_PORT", 5432);
     public string DbName => Get("DB_NAME", "ud_kokpit");
     public string DbUser => Get("DB_USER", "postgres");
-    public string DbPassword => Get("DB_PASSWORD", "563563");
+    public string DbPassword => Get("DB_PASSWORD", "");
     public string DbSchema => Get("DB_SCHEMA", "sd");
 
-    public string ConnectionString
-    {
-        get
-        {
-            if (_env.ContainsKey("DB_HOST") || !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("DB_HOST")))
-            {
-                return $"Host={DbHost};Port={DbPort};Database={DbName};Username={DbUser};Password={DbPassword};SearchPath={DbSchema}";
-            }
-            return _cfg.GetConnectionString("SdDb")
-                ?? $"Host=localhost;Port=5432;Database=ud_kokpit;Username=postgres;Password=563563;SearchPath={DbSchema}";
-        }
-    }
+    public string ConnectionString =>
+        $"Host={DbHost};Port={DbPort};Database={DbName};Username={DbUser};Password={DbPassword};SearchPath={DbSchema}";
 
     public string PythonExe => Get("PYTHON_EXE", "python");
     public string SapLogonPath => Get("SAP_LOGON_PATH", @"C:\Program Files (x86)\SAP\FrontEnd\SAPgui\saplogon.exe");
@@ -92,13 +102,13 @@ public sealed class EnvConfig
     public string SapLanguage => Get("SAP_LANGUAGE", "TR");
     public string SapDefaultSpart => Get("SAP_DEFAULT_SPART", "10");
 
-    public int BackendPort => GetInt("BACKEND_PORT", _cfg.GetValue("SdKontrol:Port", 5100));
+    public int BackendPort => GetInt("BACKEND_PORT", 5100);
     public int FrontendPort => GetInt("FRONTEND_PORT", 3100);
     public string VeriKlasoru
     {
         get
         {
-            var custom = Get("SD_DATA_DIR", _cfg["SdKontrol:VeriKlasoru"] ?? "");
+            var custom = Get("SD_DATA_DIR", "");
             return string.IsNullOrWhiteSpace(custom) ? SdRootDir : custom;
         }
     }

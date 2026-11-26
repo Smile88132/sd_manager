@@ -25,16 +25,19 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     }),
+  va01Kaydet: (surecNo, overrideBody) =>
+    request(`/talepler/${surecNo}/va01-kaydet`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(overrideBody),
+    }),
   va01Ac: (surecNo, body) =>
     request(`/talepler/${surecNo}/va01-ac`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     }),
-  va01VbsUrl: (surecNo, bolum = '10', siparisVeren = '') => {
-    const q = new URLSearchParams({ bolum, siparisVeren });
-    return `/api/talepler/${surecNo}/va01-script.vbs?${q}`;
-  },
+  va01VbsUrl: (surecNo) => `/api/talepler/${surecNo}/va01-script.vbs`,
   aiDenetim: (surecNo) => request(`/talepler/${surecNo}/ai-denetim`, { method: 'POST' }),
   aiSozlesmeKiyas: (surecNo, { file, metin }) => {
     const fd = new FormData();

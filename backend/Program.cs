@@ -12,7 +12,7 @@ var builder = Directory.Exists(exeWebRoot)
     ? WebApplication.CreateBuilder(new WebApplicationOptions { Args = args, ContentRootPath = AppContext.BaseDirectory, WebRootPath = exeWebRoot })
     : WebApplication.CreateBuilder(args);
 
-var envCfg = new EnvConfig(builder.Configuration, builder.Environment);
+var envCfg = new EnvConfig(builder.Environment);
 builder.WebHost.UseUrls($"http://0.0.0.0:{envCfg.BackendPort}");
 
 builder.Services.AddSingleton(envCfg);
@@ -48,8 +48,15 @@ async Task<(IDictionary<string, object?>? talep, List<IDictionary<string, object
 {
     var tRow = await c.QueryFirstOrDefaultAsync("SELECT *, ham_veri::text AS ham_veri FROM sd.talep WHERE surec_no = @surecNo", new { surecNo });
     var kRows = await c.QueryAsync("SELECT *, ham_veri::text AS ham_veri FROM sd.talep_kalem WHERE surec_no = @surecNo ORDER BY kalem_no, id", new { surecNo });
-    var oRow = await c.QueryFirstOrDefaultAsync("SELECT *, onaylanan_uyarilar::text AS onaylanan_uyarilar FROM sd.talep_onay WHERE surec_no = @surecNo", new { surecNo });
+    var oRow = await c.QueryFirstOrDefaultAsync("SELECT *, onaylanan_uyarilar::text AS onaylanan_uyarilar, va01_override::text AS va01_override FROM sd.talep_onay WHERE surec_no = @surecNo", new { surecNo });
     return (tRow != null ? ToDict(tRow) : null, kRows.Select(r => ToDict(r)).ToList(), oRow);
+}
+
+static Va01OverrideDto? ParseOverride(string? json)
+{
+    if (string.IsNullOrWhiteSpace(json)) return null;
+    try { return JsonSerializer.Deserialize<Va01OverrideDto>(json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true }); }
+    catch { return null; }
 }
 
 var api = app.MapGroup("/api");
@@ -63,6 +70,8 @@ api.MapGet("/health", async () =>
     return Results.Ok(new
     {
         durum = "OK",
+        envDosyasi = envCfg.EnvFilePath,
+        envOkundu = File.Exists(envCfg.EnvFilePath),
         veritabani = envCfg.DbName,
         dbHost = $"{envCfg.DbHost}:{envCfg.DbPort}",
         sema = envCfg.DbSchema,
@@ -218,19 +227,21 @@ api.MapGet("/ozet", async () =>
     return Results.Ok(new { genel, akis, tur });
 });
 
-// ---- Tekil Talep Detayı + Kural Bulguları + AI Geçmişi ----
-api.MapGet("/talepler/{surecNo:long}", async (long surecNo) =>
+// ---- Tekil Talep Detayı + Kural Bulguları + VA01 Önizleme + AI Geçmişi ----
+api.MapGet("/talepler/{surecNo:long}", async (long surecNo, SdVa01Service va01) =>
 {
     await using var c = Db();
     var (talep, kalemler, onay) = await GetTalepTamAsync(c, surecNo);
     if (talep == null && kalemler.Count == 0) return Results.NotFound(new { hata = "Talep bulunamadı." });
 
+    var savedOv = ParseOverride((string?)onay?.va01_override);
+    var va01Varsayilan = talep != null ? va01.HazirlaTalepPayload(talep, kalemler, savedOv) : null;
     var kontrol = SdRuleEngine.Degerlendir(talep, kalemler, (string?)onay?.onay_durumu);
     var aiGecmis = await c.QueryAsync(
         "SELECT id, analiz_turu, baslik, sonuc_metni, model_bilgisi, olusturuldu FROM sd.ai_analiz_log WHERE surec_no = @surecNo ORDER BY id DESC LIMIT 10",
         new { surecNo });
 
-    return Results.Ok(new { talep, kalemler, kontrol, onay, aiGecmis });
+    return Results.Ok(new { talep, kalemler, kontrol, onay, va01Varsayilan, aiGecmis });
 });
 
 // ---- Onay / İstisna Kararı Kaydetme ----
@@ -271,6 +282,20 @@ api.MapPost("/talepler/{surecNo:long}/onayla", async (long surecNo, OnayIstekDto
     return Results.Ok(new { mesaj = dto.Onayla ? "Talep SAP VA01 girişi için onaylandı." : "Onay geri alındı.", kontrol = guncelKontrol });
 });
 
+// ---- VA01 Başlık/Muhatap/Tarih Düzenlemelerini Kaydetme ----
+api.MapPost("/talepler/{surecNo:long}/va01-kaydet", async (long surecNo, Va01OverrideDto ov) =>
+{
+    await using var c = Db();
+    var ovJson = JsonSerializer.Serialize(ov);
+    await c.ExecuteAsync(@"
+        INSERT INTO sd.talep_onay (surec_no, onay_durumu, va01_override, guncellendi)
+        VALUES (@surecNo, 'Bekliyor', CAST(@ov AS jsonb), NOW())
+        ON CONFLICT (surec_no) DO UPDATE SET
+            va01_override = CAST(@ov AS jsonb),
+            guncellendi = NOW();", new { surecNo, ov = ovJson });
+    return Results.Ok(new { mesaj = "VA01 alan bilgileri kaydedildi." });
+});
+
 // ---- SAP VA01 Aç & Doldur (KAYDETMEDEN KULLANICIYA BIRAKIR!) ----
 api.MapPost("/talepler/{surecNo:long}/va01-ac", async (long surecNo, Va01AcIstek istek, SdVa01Service va01, CancellationToken ct) =>
 {
@@ -285,26 +310,30 @@ api.MapPost("/talepler/{surecNo:long}/va01-ac", async (long surecNo, Va01AcIstek
         {
             hata = kontrol.KirmiziSayisi > 0
                 ? "Kırmızı engelleyici hatalar giderilmeden VA01 açılamaz."
-                : "Sarı/Turuncu uyarılar mevcut. Lütfen önce uyarıları inceleyip 'Onayla (İstisna ile Geç)' butonuna basın."
+                : "Sarı/Turuncu uyarılar mevcut. Lütfen önce uyarıları inceleyip 'Onayla' butonuna basın."
         });
     }
+
+    istek.Override ??= ParseOverride((string?)onay?.va01_override);
+    var ovJson = istek.Override != null ? JsonSerializer.Serialize(istek.Override) : null;
 
     var sonuc = await va01.AcVeDoldurAsync(talep, kalemler, istek, ct);
     if (sonuc.Ok)
     {
         await c.ExecuteAsync(@"
-            INSERT INTO sd.talep_onay (surec_no, onay_durumu, va01_acildi_mi, son_va01_tarihi, guncellendi)
-            VALUES (@surecNo, 'VA01 Açıldı', TRUE, NOW(), NOW())
+            INSERT INTO sd.talep_onay (surec_no, onay_durumu, va01_override, va01_acildi_mi, son_va01_tarihi, guncellendi)
+            VALUES (@surecNo, 'VA01 Açıldı', CAST(@ov AS jsonb), TRUE, NOW(), NOW())
             ON CONFLICT (surec_no) DO UPDATE SET
+                va01_override = COALESCE(CAST(@ov AS jsonb), sd.talep_onay.va01_override),
                 va01_acildi_mi = TRUE,
                 son_va01_tarihi = NOW(),
-                guncellendi = NOW();", new { surecNo });
+                guncellendi = NOW();", new { surecNo, ov = ovJson });
     }
     return sonuc.Ok ? Results.Ok(sonuc) : Results.BadRequest(new { hata = sonuc.Mesaj, kod = sonuc.HataKodu });
 });
 
 // ---- Uzak PC / VDI için Şifresiz İndirilebilir VA01 .vbs Scripti ----
-api.MapGet("/talepler/{surecNo:long}/va01-script.vbs", async (long surecNo, string? bolum, string? siparisVeren, SdVa01Service va01) =>
+api.MapGet("/talepler/{surecNo:long}/va01-script.vbs", async (long surecNo, SdVa01Service va01) =>
 {
     await using var c = Db();
     var (talep, kalemler, onay) = await GetTalepTamAsync(c, surecNo);
@@ -314,7 +343,8 @@ api.MapGet("/talepler/{surecNo:long}/va01-script.vbs", async (long surecNo, stri
     if (!kontrol.Va01Acilabilir)
         return Results.BadRequest(new { hata = "VA01 scripti indirmek için önce talebi onaylayın." });
 
-    var vbs = va01.VbsUret(talep, kalemler, bolum, siparisVeren);
+    var savedOv = ParseOverride((string?)onay?.va01_override);
+    var vbs = va01.VbsUret(talep, kalemler, savedOv);
     var bytes = Encoding.UTF8.GetPreamble().Concat(Encoding.UTF8.GetBytes(vbs)).ToArray();
     return Results.File(bytes, "text/vbscript", $"VA01_Taslak_{surecNo}.vbs");
 });

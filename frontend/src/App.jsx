@@ -33,9 +33,28 @@ const TALEP_ALANLARI = [
   ['talep_eden_ad_soyad', 'Talep Eden'], ['talep_eden_departman', 'Departman'], ['akis_durumu', 'Akış Durumu'],
 ];
 
+const BOS_VA01 = {
+  siparisVeren: '',
+  maliTeslimAlan: '',
+  sasNo: '',
+  sasTarihi: '',
+  istenenTeslimTarihi: '',
+  sozlesmeBaslangic: '',
+  sozlesmeBitis: '',
+  odemeKosulu: '',
+  inco1: '',
+  inco2: '',
+  paraBirimi: '',
+  satisOrg: '',
+  dagitimKanali: '',
+  bolum: '10',
+  uretimYeri: '',
+  zorlaKalemTipi: false,
+};
+
 function TalepDetay({ surecNo, health, onClose, onRefresh }) {
   const [data, setData] = useState(null);
-  const [sekme, setSekme] = useState('kontrol'); // kontrol | baslik | ai | va01
+  const [sekme, setSekme] = useState('kontrol');
   const [istisnaNotu, setIstisnaNotu] = useState('');
   const [onaylayan, setOnaylayan] = useState('');
   const [girilenSdNo, setGirilenSdNo] = useState('');
@@ -48,12 +67,11 @@ function TalepDetay({ surecNo, health, onClose, onRefresh }) {
   const [mailHedef, setMailHedef] = useState('talep_eden');
   const [mailEkNot, setMailEkNot] = useState('');
 
-  // SAP VA01 state (şifre yalnızca anlık state'te tutulur)
+  // SAP VA01 state
+  const [va01Form, setVa01Form] = useState(BOS_VA01);
   const [sapUser, setSapUser] = useState('');
   const [sapPassword, setSapPassword] = useState('');
   const [reuseOpenSession, setReuseOpenSession] = useState(true);
-  const [bolum, setBolum] = useState('10');
-  const [siparisVerenOverride, setSiparisVerenOverride] = useState('');
   const [va01Sonuc, setVa01Sonuc] = useState(null);
 
   const yukle = useCallback(() => {
@@ -63,12 +81,35 @@ function TalepDetay({ surecNo, health, onClose, onRefresh }) {
         setIstisnaNotu(d.onay?.istisna_notu || '');
         setOnaylayan(d.onay?.onaylayan || '');
         setGirilenSdNo(d.onay?.girilen_sd_no || '');
+        if (d.va01Varsayilan) {
+          const v = d.va01Varsayilan;
+          setVa01Form({
+            siparisVeren: v.siparisVeren || '',
+            maliTeslimAlan: v.maliTeslimAlan || '',
+            sasNo: v.sasNo || '',
+            sasTarihi: v.sasTarihi || '',
+            istenenTeslimTarihi: v.istenenTeslimTarihi || '',
+            sozlesmeBaslangic: v.sozlesmeBaslangic || '',
+            sozlesmeBitis: v.sozlesmeBitis || '',
+            odemeKosulu: v.odemeKosulu || '',
+            inco1: v.inco1 || '',
+            inco2: v.inco2 || '',
+            paraBirimi: v.paraBirimi || '',
+            satisOrg: v.satisOrganizasyonu || '9990',
+            dagitimKanali: v.dagitimKanali || '10',
+            bolum: v.bolum || '10',
+            uretimYeri: v.uretimYeri === '9999' ? '' : (v.uretimYeri || ''),
+            zorlaKalemTipi: Boolean(v.zorlaKalemTipi),
+          });
+        }
         if (d.aiGecmis?.length && !aiCikti) setAiCikti(d.aiGecmis[0].sonuc_metni);
       })
       .catch((e) => toast.error(e.message));
   }, [surecNo]);
 
   useEffect(() => { yukle(); }, [yukle]);
+
+  const setF = (k, v) => setVa01Form((p) => ({ ...p, [k]: v }));
 
   const t = data?.talep;
   const kalemler = data?.kalemler || [];
@@ -82,11 +123,8 @@ function TalepDetay({ surecNo, health, onClose, onRefresh }) {
       toast.success(r.mesaj);
       yukle();
       onRefresh();
-    } catch (e) {
-      toast.error(e.message);
-    } finally {
-      setBusy(false);
-    }
+    } catch (e) { toast.error(e.message); }
+    finally { setBusy(false); }
   };
 
   const calistirAiDenetim = async () => {
@@ -122,12 +160,48 @@ function TalepDetay({ surecNo, health, onClose, onRefresh }) {
     finally { setBusy(false); }
   };
 
+  const va01AlanlariniKaydet = async () => {
+    setBusy(true);
+    try {
+      await api.va01Kaydet(surecNo, va01Form);
+      toast.success('VA01 başlık ve muhatap alanları kaydedildi.');
+    } catch (err) { toast.error(err.message); }
+    finally { setBusy(false); }
+  };
+
+  const vbsIndir = async () => {
+    if (!va01Form.siparisVeren.trim()) {
+      toast.error('SAP VA01 için önce Sipariş Veren (Müşteri Kodu, örn: 601607) alanını doldurun.');
+      return;
+    }
+    try {
+      await api.va01Kaydet(surecNo, {
+        ...va01Form,
+        maliTeslimAlan: va01Form.maliTeslimAlan.trim() || va01Form.siparisVeren.trim(),
+      });
+      window.location.href = api.va01VbsUrl(surecNo);
+    } catch (err) { toast.error(err.message); }
+  };
+
   const va01Baslat = async (e) => {
     e.preventDefault();
+    if (!va01Form.siparisVeren.trim()) {
+      toast.error('Sipariş Veren boş bırakılamaz! Müşteri kodunu (örn: 601607) veya müşteri adını girin.');
+      return;
+    }
+    const guncelOverride = {
+      ...va01Form,
+      maliTeslimAlan: va01Form.maliTeslimAlan.trim() || va01Form.siparisVeren.trim(),
+    };
     setBusy(true);
     setVa01Sonuc(null);
     try {
-      const r = await api.va01Ac(surecNo, { sapUser, sapPassword, reuseOpenSession, bolum, siparisVerenOverride });
+      const r = await api.va01Ac(surecNo, {
+        sapUser,
+        sapPassword,
+        reuseOpenSession,
+        override: guncelOverride,
+      });
       setVa01Sonuc(r);
       setSapPassword('');
       toast.success('SAP VA01 ekranı dolduruldu (kaydedilmedi).');
@@ -141,6 +215,7 @@ function TalepDetay({ surecNo, health, onClose, onRefresh }) {
   };
 
   const et = KONTROL_ETIKET[kontrol?.genelDurum] || { cls: 'gray', text: '-' };
+  const svBos = !va01Form.siparisVeren.trim();
 
   return (
     <div className="drawer-backdrop" onClick={onClose}>
@@ -311,7 +386,6 @@ function TalepDetay({ surecNo, health, onClose, onRefresh }) {
                 <h2>Yapay Zeka Destek Araçları (UGES TYM Şartname Uzmanı)</h2>
               </div>
               <div style={{ padding: 14, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 12 }}>
-                {/* Kart 1: Uzman Denetim */}
                 <div className="panel" style={{ margin: 0, padding: 12 }}>
                   <h4 style={{ margin: '0 0 6px' }}>1. Akıllı Kalem & BOM / Hizmet Denetimi</h4>
                   <p className="muted" style={{ margin: '0 0 10px', whiteSpace: 'normal' }}>
@@ -322,7 +396,6 @@ function TalepDetay({ surecNo, health, onClose, onRefresh }) {
                   </button>
                 </div>
 
-                {/* Kart 2: Sözleşme Kıyaslama */}
                 <div className="panel" style={{ margin: 0, padding: 12 }}>
                   <h4 style={{ margin: '0 0 6px' }}>2. Sözleşme / PO ↔ Talep Çapraz Kontrol</h4>
                   <input type="file" accept=".docx,.txt" onChange={(e) => setSozFile(e.target.files?.[0] || null)} style={{ width: '100%', marginBottom: 6 }} />
@@ -338,7 +411,6 @@ function TalepDetay({ surecNo, health, onClose, onRefresh }) {
                   </button>
                 </div>
 
-                {/* Kart 3: Mail Taslağı */}
                 <div className="panel" style={{ margin: 0, padding: 12 }}>
                   <h4 style={{ margin: '0 0 6px' }}>3. Onay / Revize E-Posta Taslağı Üret</h4>
                   <select value={mailHedef} onChange={(e) => setMailHedef(e.target.value)} style={{ width: '100%', marginBottom: 6 }}>
@@ -373,81 +445,221 @@ function TalepDetay({ surecNo, health, onClose, onRefresh }) {
             </div>
           </>
         ) : (
-          <div className="panel">
-            <div className="panel-head">
-              <h2>SAP GUI VA01 Otomatik Alan Doldurma (Kaydetmeden Kullanıcıya Bırakır)</h2>
-              <span className="badge amber">Ctrl+S (Kaydet) ÇAĞRILMAZ</span>
-            </div>
-
-            {!kontrol.va01Acilabilir ? (
-              <div style={{ padding: 18 }}>
-                <div className="rule-item Kirmizi">
-                  <h4>VA01 Henüz Açılamaz</h4>
-                  <p>
-                    {kontrol.kirmiziSayisi > 0
-                      ? `Bu talepte ${kontrol.kirmiziSayisi} adet Kırmızı (engelleyici) kural hatası var.`
-                      : 'Turuncu/Sarı uyarılar mevcut. Lütfen "1. Kural Kontrolü & Onay" sekmesinden uyarıları inceleyip onay verin.'}
-                  </p>
-                </div>
+          <>
+            <div className="panel">
+              <div className="panel-head">
+                <h2>SAP GUI VA01 Başlık, Muhatap & Tarih Hazırlığı (Kaydetmeden Açık Bırakır)</h2>
+                <span className="badge amber">Ctrl+S (Kaydet) ÇAĞRILMAZ</span>
               </div>
-            ) : (
-              <form onSubmit={va01Baslat}>
-                <div className="form-grid">
-                  <label>
-                    SAP Bağlantı Sistemi (.env)
-                    <input value={health?.sapBaglanti || 'KKP CANLI'} disabled />
-                  </label>
-                  <label>
-                    Bölüm (SPART - VA01 İlk Ekran)
-                    <input value={bolum} onChange={(e) => setBolum(e.target.value)} placeholder="10" />
-                  </label>
-                  <label>
-                    Sipariş Veren Muhatap Kodu (Raporda boşsa opsiyonel)
-                    <input value={siparisVerenOverride} onChange={(e) => setSiparisVerenOverride(e.target.value)} placeholder="Örn: 1000245" />
-                  </label>
-                  <label style={{ justifyContent: 'center' }}>
-                    <span style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 16 }}>
-                      <input type="checkbox" checked={reuseOpenSession} onChange={(e) => setReuseOpenSession(e.target.checked)} />
-                      Açık SAP GUI oturumu varsa şifresiz kullan
-                    </span>
-                  </label>
-                  <label>
-                    SAP Kullanıcı Adı (Açık oturum yoksa)
-                    <input value={sapUser} onChange={(e) => setSapUser(e.target.value)} autoComplete="off" placeholder="SAP kullanıcınız" />
-                  </label>
-                  <label>
-                    SAP Şifresi (Diske/DB'ye kaydedilmez!)
-                    <input type="password" value={sapPassword} onChange={(e) => setSapPassword(e.target.value)} autoComplete="new-password" placeholder="••••••••" />
-                  </label>
-                </div>
 
-                <div style={{ padding: '0 14px 14px', display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-                  <button type="submit" className="btn sap" disabled={busy}>
-                    {busy ? 'SAP GUI Hazırlanıyor...' : '🚀 SAP VA01 Ekranını Aç & Alanları Doldur (Kaydetme)'}
-                  </button>
-                  <a
-                    className="btn"
-                    href={api.va01VbsUrl(surecNo, bolum, siparisVerenOverride)}
-                    download
-                    title="Uzak sunucudan çalışıyorsanız kendi bilgisayarınızdaki açık SAP oturumunda çift tıklayarak çalıştırabilirsiniz"
-                  >
-                    ⬇ Şifresiz VA01 .vbs Scripti İndir (VDI / Uzak PC)
-                  </a>
+              {!kontrol.va01Acilabilir ? (
+                <div style={{ padding: 18 }}>
+                  <div className="rule-item Kirmizi">
+                    <h4>VA01 Henüz Açılamaz</h4>
+                    <p>
+                      {kontrol.kirmiziSayisi > 0
+                        ? `Bu talepte ${kontrol.kirmiziSayisi} adet Kırmızı (engelleyici) kural hatası var.`
+                        : 'Turuncu/Sarı uyarılar mevcut. Lütfen "1. Kural Kontrolü & Onay" sekmesinden uyarıları inceleyip onay verin.'}
+                    </p>
+                  </div>
                 </div>
-
-                {va01Sonuc && (
-                  <div style={{ padding: '0 14px 14px' }}>
-                    <div className="rule-item" style={{ borderLeftColor: '#059669', background: '#ecfdf5' }}>
-                      <h4>✓ {va01Sonuc.mesaj}</h4>
-                      {va01Sonuc.doldurulan?.length > 0 && <p><b>Doldurulan:</b> {va01Sonuc.doldurulan.join(' · ')}</p>}
-                      {va01Sonuc.sapDurumCubugu && <p><b>SAP Durum Çubuğu:</b> {va01Sonuc.sapDurumCubugu}</p>}
-                      {va01Sonuc.uyarilar?.map((u, idx) => <p key={idx} style={{ color: '#b45309' }}>⚠ {u}</p>)}
+              ) : (
+                <form onSubmit={va01Baslat}>
+                  <div style={{ padding: '12px 14px 0' }}>
+                    <div className="rule-item" style={{ borderLeftColor: svBos ? '#e11d48' : '#0284c7', background: svBos ? '#fff1f2' : '#f0f9ff', marginBottom: 4 }}>
+                      <h4>{svBos ? '⚠ Sipariş Veren Zorunludur!' : '✓ Muhatap, Tarih ve Başlık Verileri Hazır'}</h4>
+                      <p>
+                        <b>Sipariş Veren</b> ve <b>Malı Teslim Alan</b> alanlarına doğrudan SAP müşteri kodunu (örn: <code>601607</code>) veya müşteri adını (örn: <code>Elegancia Electromechanical</code> — SAP F4 penceresinden otomatik aranır) girebilirsiniz. Önce muhataplar ve tarihler girilip Enter ile doğrulanır, ardından kalem fiyatları ve PYP alanları doldurulur.
+                      </p>
                     </div>
                   </div>
-                )}
-              </form>
-            )}
-          </div>
+
+                  {/* Bölüm A: Zorunlu Muhatap & Başlık Tarihleri */}
+                  <div className="form-grid">
+                    <label>
+                      <span style={{ color: svBos ? '#be123c' : undefined }}>* Sipariş Veren (Müşteri Kodu veya Adı)</span>
+                      <input
+                        value={va01Form.siparisVeren}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setVa01Form((p) => ({
+                            ...p,
+                            siparisVeren: v,
+                            maliTeslimAlan: !p.maliTeslimAlan || p.maliTeslimAlan === p.siparisVeren ? v : p.maliTeslimAlan,
+                          }));
+                        }}
+                        style={svBos ? { borderColor: '#e11d48', background: '#fff1f2' } : undefined}
+                        placeholder="Örn: 601607 veya Elegancia Electromechanical"
+                      />
+                    </label>
+
+                    <label>
+                      <span style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <span>* Malı Teslim Alan (Kod veya Ad)</span>
+                        <a
+                          href="#ayni"
+                          onClick={(e) => { e.preventDefault(); setF('maliTeslimAlan', va01Form.siparisVeren); }}
+                          style={{ fontSize: 11, color: '#4338ca' }}
+                        >
+                          Sipariş Veren ile Aynı Yap
+                        </a>
+                      </span>
+                      <input
+                        value={va01Form.maliTeslimAlan}
+                        onChange={(e) => setF('maliTeslimAlan', e.target.value)}
+                        placeholder="Boşsa Sipariş Veren ile aynı girilir"
+                      />
+                    </label>
+
+                    <label>
+                      SAS Numarası (VBKD-BSTKD)
+                      <input value={va01Form.sasNo} onChange={(e) => setF('sasNo', e.target.value)} placeholder="Örn: 4600019061" />
+                    </label>
+
+                    <label>
+                      SAS Tarihi (gg.aa.yyyy)
+                      <input value={va01Form.sasTarihi} onChange={(e) => setF('sasTarihi', e.target.value)} placeholder="Örn: 16.11.2026" />
+                    </label>
+
+                    <label>
+                      İstenen Teslim Tarihi (gg.aa.yyyy)
+                      <input value={va01Form.istenenTeslimTarihi} onChange={(e) => setF('istenenTeslimTarihi', e.target.value)} placeholder="Örn: 30.11.2026" />
+                    </label>
+
+                    <label>
+                      Sözleşme Başlangıç / Bitiş (gg.aa.yyyy)
+                      <div style={{ display: 'flex', gap: 6 }}>
+                        <input style={{ width: '50%' }} value={va01Form.sozlesmeBaslangic} onChange={(e) => setF('sozlesmeBaslangic', e.target.value)} placeholder="Başlangıç" />
+                        <input style={{ width: '50%' }} value={va01Form.sozlesmeBitis} onChange={(e) => setF('sozlesmeBitis', e.target.value)} placeholder="Bitiş" />
+                      </div>
+                    </label>
+
+                    <label>
+                      Belge Para Birimi & Ödeme Koşulu
+                      <div style={{ display: 'flex', gap: 6 }}>
+                        <input style={{ width: '38%' }} value={va01Form.paraBirimi} onChange={(e) => setF('paraBirimi', e.target.value)} placeholder="USD" />
+                        <input style={{ width: '62%' }} value={va01Form.odemeKosulu} onChange={(e) => setF('odemeKosulu', e.target.value)} placeholder="Örn: 0030 / 0000" />
+                      </div>
+                    </label>
+
+                    <label>
+                      Incoterms (Kod + Yer)
+                      <div style={{ display: 'flex', gap: 6 }}>
+                        <input style={{ width: '35%' }} value={va01Form.inco1} onChange={(e) => setF('inco1', e.target.value)} placeholder="DAP" />
+                        <input style={{ width: '65%' }} value={va01Form.inco2} onChange={(e) => setF('inco2', e.target.value)} placeholder="ASELSAN / ANKARA" />
+                      </div>
+                    </label>
+
+                    <label>
+                      Satış Org. / Dağıtım Knl. / Bölüm
+                      <div style={{ display: 'flex', gap: 6 }}>
+                        <input style={{ width: '38%' }} value={va01Form.satisOrg} onChange={(e) => setF('satisOrg', e.target.value)} placeholder="9990" />
+                        <input style={{ width: '31%' }} value={va01Form.dagitimKanali} onChange={(e) => setF('dagitimKanali', e.target.value)} placeholder="10" />
+                        <input style={{ width: '31%' }} value={va01Form.bolum} onChange={(e) => setF('bolum', e.target.value)} placeholder="10" />
+                      </div>
+                    </label>
+
+                    <label>
+                      Üretim Yeri (Boşsa SAP malzeme kartından alır, örn: 5100)
+                      <input value={va01Form.uretimYeri} onChange={(e) => setF('uretimYeri', e.target.value)} placeholder="Otomatik (SAP Malzeme Kartı)" />
+                    </label>
+
+                    <label style={{ justifyContent: 'center' }}>
+                      <span style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 14 }}>
+                        <input type="checkbox" checked={reuseOpenSession} onChange={(e) => setReuseOpenSession(e.target.checked)} />
+                        Açık SAP GUI oturumu varsa şifresiz kullan
+                      </span>
+                    </label>
+
+                    <label style={{ justifyContent: 'center' }}>
+                      <span style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 14 }}>
+                        <input type="checkbox" checked={va01Form.zorlaKalemTipi} onChange={(e) => setF('zorlaKalemTipi', e.target.checked)} />
+                        Kalem tipini (KlmT) rapordan zorla
+                      </span>
+                    </label>
+
+                    {!reuseOpenSession && (
+                      <>
+                        <label>
+                          SAP Kullanıcı Adı ({health?.sapBaglanti || 'KKP CANLI'})
+                          <input value={sapUser} onChange={(e) => setSapUser(e.target.value)} autoComplete="off" placeholder="SAP kullanıcınız" />
+                        </label>
+                        <label>
+                          SAP Şifresi (Diske/DB'ye yazılmaz!)
+                          <input type="password" value={sapPassword} onChange={(e) => setSapPassword(e.target.value)} autoComplete="new-password" placeholder="••••••••" />
+                        </label>
+                      </>
+                    )}
+                  </div>
+
+                  <div style={{ padding: '0 14px 14px', display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+                    <button type="submit" className="btn sap" disabled={busy}>
+                      {busy ? 'SAP GUI Dolduruluyor...' : '🚀 SAP VA01 Aç & Tüm Alanları Doldur (Kaydetme)'}
+                    </button>
+                    <button type="button" className="btn" disabled={busy} onClick={va01AlanlariniKaydet}>
+                      💾 Bu Alan Bilgilerini Kaydet
+                    </button>
+                    <button
+                      type="button"
+                      className="btn"
+                      disabled={busy}
+                      onClick={vbsIndir}
+                      title="Uzak sunucudan çalışıyorsanız kendi bilgisayarınızdaki açık SAP oturumunda çift tıklayarak çalıştırabilirsiniz"
+                    >
+                      ⬇ Şifresiz VA01 .vbs Scripti İndir (VDI / Uzak PC)
+                    </button>
+                  </div>
+
+                  {va01Sonuc && (
+                    <div style={{ padding: '0 14px 14px' }}>
+                      <div className="rule-item" style={{ borderLeftColor: '#059669', background: '#ecfdf5' }}>
+                        <h4>✓ {va01Sonuc.mesaj}</h4>
+                        {va01Sonuc.doldurulan?.length > 0 && <p><b>Doldurulan:</b> {va01Sonuc.doldurulan.join(' · ')}</p>}
+                        {va01Sonuc.sapDurumCubugu && <p><b>SAP Durum Çubuğu:</b> {va01Sonuc.sapDurumCubugu}</p>}
+                        {va01Sonuc.uyarilar?.map((u, idx) => <p key={idx} style={{ color: '#b45309' }}>⚠ {u}</p>)}
+                      </div>
+                    </div>
+                  )}
+                </form>
+              )}
+            </div>
+
+            {/* VA01'e Yazılacak Kalem Tablosu Önizlemesi */}
+            <div className="panel">
+              <div className="panel-head">
+                <h2>VA01 Kalem Tablosuna Yazılacak Veriler ({kalemler.length} Kalem)</h2>
+                <span className="muted">Önce Malzeme/Miktar/1.Tarih doğrulanır, ardından Tutar (Birim Fiyat), PB ve PYP Öğesi yazılır.</span>
+              </div>
+              <div className="table-wrap" style={{ maxHeight: '32vh' }}>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Kalem</th><th>Malzeme</th><th className="num">Sipariş Miktarı</th><th>ÖB</th>
+                      <th className="num">Tutar (Birim Fiyat)</th><th>PB</th><th>KlmT</th><th>ÜDKlm</th>
+                      <th>1.Tarih (Teslim)</th><th>Hazır Edim</th><th>PYP Öğesi</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {kalemler.map((k) => (
+                      <tr key={k.id}>
+                        <td>{k.kalem_no}</td>
+                        <td><b>{k.malzeme_no}</b></td>
+                        <td className="num">{k.miktar_ham || fmtNum(k.miktar, 3)}</td>
+                        <td>{k.olcu_birimi}</td>
+                        <td className="num"><b>{k.birim_fiyat_ham || fmtNum(k.birim_fiyat)}</b></td>
+                        <td>{k.para_birimi || va01Form.paraBirimi}</td>
+                        <td>{(k.kalem_tipi || '').trim() || '-'}</td>
+                        <td>{k.ust_kalem || '-'}</td>
+                        <td>{fmtDate(k.teslim_tarihi)}</td>
+                        <td>{fmtDate(k.hazir_edim_tarihi)}</td>
+                        <td><code>{k.pyp_ogesi || '-'}</code></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </>
         )}
       </div>
     </div>

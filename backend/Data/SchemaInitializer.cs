@@ -128,11 +128,13 @@ CREATE TABLE IF NOT EXISTS sd.talep_onay (
     onaylayan               VARCHAR(200),
     istisna_notu            TEXT,
     onaylanan_uyarilar      JSONB,
+    va01_override           JSONB,
     va01_acildi_mi          BOOLEAN NOT NULL DEFAULT FALSE,
     son_va01_tarihi         TIMESTAMP,
     girilen_sd_no           VARCHAR(40),
     guncellendi             TIMESTAMP NOT NULL DEFAULT NOW()
 );
+ALTER TABLE sd.talep_onay ADD COLUMN IF NOT EXISTS va01_override JSONB;
 
 -- AI denetim, sözleşme kıyaslama ve mail taslağı kayıtları
 CREATE TABLE IF NOT EXISTS sd.ai_analiz_log (
