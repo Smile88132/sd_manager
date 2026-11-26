@@ -2,6 +2,8 @@ bin/
 obj/
 node_modules/
 dist/
+app/
+backend/wwwroot/
 .env
 *.xlsx
 *.docx

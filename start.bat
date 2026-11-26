@@ -1,12 +1,12 @@
 @echo off
 chcp 65001 >nul
 setlocal EnableDelayedExpansion
-title UGES SD Kontrol - Baslatici
+title UGES SD Kontrol - Standalone Baslatici
 
 cd /d "%~dp0"
 
 echo ============================================================================
-echo   UGES SD KONTROL VE SAP VA01 HAZIRLIK SISTEMI - ORTAM KONTROLU
+echo   UGES SD KONTROL ^& SAP VA01 SISTEMI ^(STANDALONE - SDK/NODE GEREKTIRMEZ^)
 echo ============================================================================
 echo.
 
@@ -15,7 +15,7 @@ if not exist ".env" (
     if exist ".env.example" (
         copy /y ".env.example" ".env" >nul
         echo [UYARI] .env dosyasi bulunamadi, .env.example kopyalanarak olusturuldu.
-        echo         Lutfen .env icindeki PYTHON_EXE ve DB ayarlarini kontrol edin!
+        echo         Lutfen .env icindeki PYTHON_EXE ve DB ayarlarini bilgisayariniza gore duzenleyin!
     ) else (
         echo [HATA]  .env dosyasi bulunamadi!
         pause
@@ -36,123 +36,82 @@ for /f "usebackq tokens=1,* delims==" %%A in (".env") do (
 )
 
 if not defined BACKEND_PORT set "BACKEND_PORT=5100"
-if not defined FRONTEND_PORT set "FRONTEND_PORT=3100"
 if not defined DB_HOST set "DB_HOST=localhost"
 if not defined DB_PORT set "DB_PORT=5432"
 if not defined DB_NAME set "DB_NAME=ud_kokpit"
 if not defined DB_SCHEMA set "DB_SCHEMA=sd"
 
-echo         Veritabani : !DB_HOST!:!DB_PORT! / !DB_NAME! (Sema: !DB_SCHEMA!)
-echo         Portlar    : Backend=!BACKEND_PORT! ^| Frontend=!FRONTEND_PORT!
+echo         Veritabani : !DB_HOST!:!DB_PORT! / !DB_NAME! ^(Sema: !DB_SCHEMA!^)
+echo         Uygulama   : http://localhost:!BACKEND_PORT!
 echo.
 
-:: 2) .NET SDK Kontrolu
-where dotnet >nul 2>&1
-if errorlevel 1 (
-    echo [HATA]  .NET SDK bulunamadi! Lutfen .NET 8 SDK yukleyin.
-    pause
-    exit /b 1
+:: 2) Standalone Exe Kontrolu (SD\app\SdKontrol.API.exe)
+if not exist "app\SdKontrol.API.exe" (
+    echo [UYARI] app\SdKontrol.API.exe paketi bulunamadi. Gelistirici araclari kontrol ediliyor...
+    where dotnet >nul 2>&1
+    if errorlevel 1 (
+        echo [HATA]  Bu bilgisayarda app\SdKontrol.API.exe klasoru eksik!
+        echo         Lutfen SD klasorunu 'app' alt klasoru ile birlikte kopyalayin.
+        pause
+        exit /b 1
+    )
+    call "%~dp0paketle.bat"
+    if errorlevel 1 exit /b 1
+) else (
+    echo [OK]    Standalone uygulama paketi hazir ^(app\SdKontrol.API.exe - .NET/Node gerektirmez^).
 )
-for /f "delims=" %%v in ('dotnet --version') do set "DOTNET_VER=%%v"
-echo [OK]    .NET SDK hazir: v!DOTNET_VER!
 
-:: 3) Node.js Kontrolu
-where node >nul 2>&1
-if errorlevel 1 (
-    echo [HATA]  Node.js bulunamadi! Lutfen Node.js yukleyin.
-    pause
-    exit /b 1
-)
-for /f "delims=" %%v in ('node --version') do set "NODE_VER=%%v"
-echo [OK]    Node.js hazir : !NODE_VER!
-
-:: 4) Python & pywin32 Kontrolu
+:: 3) Python ^& pywin32 Kontrolu (Sadece direkt SAP GUI acma icin opsiyonel)
 if defined PYTHON_EXE (
     if exist "!PYTHON_EXE!" (
         for /f "delims=" %%v in ('"!PYTHON_EXE!" --version 2^>^&1') do set "PY_VER=%%v"
-        echo [OK]    Python bulundu: !PY_VER! ^(!PYTHON_EXE!^)
+        echo [OK]    Python bulundu: !PY_VER!
         "!PYTHON_EXE!" -c "import win32com.client" >nul 2>&1
         if errorlevel 1 (
-            echo [UYARI] Python'da 'pywin32' paketi eksik ^(SAP GUI VA01 otomasyonu icin gerekli^).
-            echo         Kurmak icin: "!PYTHON_EXE!" -m pip install pywin32
+            echo [UYARI] Python'da 'pywin32' kurulu degil ^(Direkt VA01 acma icin: "!PYTHON_EXE!" -m pip install pywin32^).
+            echo         Bunun yerine ekrandan sifresiz '.vbs indir' butonunu dogrudan kullanabilirsiniz.
         ) else (
-            echo [OK]    Python pywin32 ^(SAP GUI COM^) modulu hazir.
+            echo [OK]    Python pywin32 ^(SAP GUI COM^) hazir.
         )
     ) else (
-        echo [UYARI] .env icindeki PYTHON_EXE bulunamadi: !PYTHON_EXE!
-        echo         SAP VA01 direkt acma yerine .vbs indirme modu kullanilabilir.
+        echo [UYARI] PYTHON_EXE bu bilgisayarda bulunamadi ^(!PYTHON_EXE!^).
+        echo         .env icinden guncelleyebilir veya ekrandaki sifresiz '.vbs indir' modunu kullanabilirsiniz.
     )
-) else (
-    echo [UYARI] PYTHON_EXE tanimli degil ^(.env^).
 )
 
-:: 5) SAP GUI Kontrolu
+:: 4) SAP GUI Kontrolu
 if defined SAP_LOGON_PATH (
     if exist "!SAP_LOGON_PATH!" (
         echo [OK]    SAP GUI bulundu: !SAP_LOGON_PATH!
     ) else (
-        echo [UYARI] SAP GUI bu bilgisayarda bulunamadi: !SAP_LOGON_PATH!
+        echo [UYARI] SAP GUI varsayilan yolda bulunamadi: !SAP_LOGON_PATH!
     )
 )
 
-:: 6) PostgreSQL Erisim Kontrolu
+:: 5) PostgreSQL Erisim Kontrolu
 powershell -NoProfile -Command "$t = New-Object Net.Sockets.TcpClient; try { $t.Connect('!DB_HOST!', !DB_PORT!); $t.Close(); exit 0 } catch { exit 1 }"
 if errorlevel 1 (
     echo [HATA]  PostgreSQL veritabanina ulasilamiyor ^(!DB_HOST!:!DB_PORT!^)!
-    echo         Lutfen PostgreSQL servisinin calistigindan ve .env ayarlarindan emin olun.
+    echo         Lutfen .env dosyasindaki DB_HOST / DB_PORT / sifre bilgilerini kontrol edin.
     pause
     exit /b 1
 ) else (
     echo [OK]    PostgreSQL baglantisi basarili ^(!DB_HOST!:!DB_PORT!^).
 )
 
-:: 7) Excel Dosyalari Kontrolu
+:: 6) Excel Raporlari Kontrolu
 set "XLSX_COUNT=0"
 for %%f in ("*.xlsx") do set /a XLSX_COUNT+=1
-echo [BILGI] SD klasorunde !XLSX_COUNT! adet .xlsx raporu bulundu.
-
-:: 8) Frontend Paket Kontrolu
-if not exist "frontend\node_modules" (
-    echo.
-    echo [ISLEM] Frontend bagimliliklari yukleniyor ^(npm install^)...
-    pushd frontend
-    call npm install --no-audit --no-fund
-    if errorlevel 1 (
-        echo [HATA]  npm install basarisiz oldu!
-        popd
-        pause
-        exit /b 1
-    )
-    popd
-)
-echo [OK]    Frontend node_modules hazir.
-
-:: 9) Backend Derleme Kontrolu
-echo [ISLEM] Backend derleniyor ^(dotnet build^)...
-pushd backend
-dotnet build --nologo -v q
-if errorlevel 1 (
-    echo [HATA]  Backend derlemesi basarisiz oldu!
-    popd
-    pause
-    exit /b 1
-)
-popd
-echo [OK]    Backend basariyla derlendi.
+echo [BILGI] SD klasorunde !XLSX_COUNT! adet Excel ^(.xlsx^) raporu bulundu.
 
 echo.
 echo ============================================================================
-echo   SUNUCULAR BASLATILIYOR...
-echo   - Backend API : http://localhost:!BACKEND_PORT!  ^(Swagger: /swagger^)
-echo   - Frontend UI : http://localhost:!FRONTEND_PORT!
+echo   STANDALONE SUNUCU BASLATILIYOR -> http://localhost:!BACKEND_PORT!
+echo   ^(Kapatmak icin bu pencereyi kapatabilir veya Ctrl+C yapabilirsiniz^)
 echo ============================================================================
 echo.
 
-start "UGES SD Backend (!BACKEND_PORT!)" cmd /k "cd /d "%~dp0backend" && dotnet run --no-build"
-start "UGES SD Frontend (!FRONTEND_PORT!)" cmd /k "cd /d "%~dp0frontend" && npx vite --port !FRONTEND_PORT!"
+start "" cmd /c "timeout /t 2 /nobreak >nul & start "" http://localhost:!BACKEND_PORT!"
 
-timeout /t 3 /nobreak >nul
-start "" "http://localhost:!FRONTEND_PORT!"
-
-echo [TAMAM] Uygulama yeni pencerelerde baslatildi ve tarayicida acildi.
+"app\SdKontrol.API.exe"
 pause

@@ -67,6 +67,8 @@ public sealed class SdVa01Service
         {
             var scriptPath = Path.Combine(_hostEnv.ContentRootPath, "python", "va01_fill.py");
             if (!File.Exists(scriptPath))
+                scriptPath = Path.Combine(AppContext.BaseDirectory, "python", "va01_fill.py");
+            if (!File.Exists(scriptPath))
                 return new Va01AcSonuc { Ok = false, HataKodu = "setup", Mesaj = $"Python scripti bulunamadı: {scriptPath}" };
 
             var ilkTeslim = kalemler.Select(k => TrDate(k, "teslim_tarihi")).FirstOrDefault(x => !string.IsNullOrEmpty(x)) ?? "";

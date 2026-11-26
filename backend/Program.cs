@@ -7,7 +7,10 @@ using SdKontrol.API.Services;
 
 // UGES SD Kontrol — UGESUD Kokpit'ten bağımsız çalışan, aynı veritabanında "sd" şemasını kullanan API.
 
-var builder = WebApplication.CreateBuilder(args);
+var exeWebRoot = Path.Combine(AppContext.BaseDirectory, "wwwroot");
+var builder = Directory.Exists(exeWebRoot)
+    ? WebApplication.CreateBuilder(new WebApplicationOptions { Args = args, ContentRootPath = AppContext.BaseDirectory, WebRootPath = exeWebRoot })
+    : WebApplication.CreateBuilder(args);
 
 var envCfg = new EnvConfig(builder.Configuration, builder.Environment);
 builder.WebHost.UseUrls($"http://0.0.0.0:{envCfg.BackendPort}");
@@ -31,6 +34,8 @@ var cs = envCfg.ConnectionString;
 await SchemaInitializer.EnsureAsync(cs, app.Logger);
 
 app.UseCors();
+app.UseDefaultFiles();
+app.UseStaticFiles();
 app.UseSwagger();
 app.UseSwaggerUI();
 
@@ -451,7 +456,9 @@ api.MapPost("/talepler/{surecNo:long}/ai-mail-taslak", async (long surecNo, Mail
     return Results.Ok(new { yanit, model });
 });
 
-app.Logger.LogInformation("[SD] UGES SD Kontrol API http://localhost:{Port} (Swagger: /swagger) — DB: {Host}/{Db} (şema: {Schema})",
+app.MapFallbackToFile("index.html");
+
+app.Logger.LogInformation("[SD] UGES SD Kontrol Standalone Uygulaması: http://localhost:{Port} (Swagger: /swagger) — DB: {Host}/{Db} (şema: {Schema})",
     envCfg.BackendPort, envCfg.DbHost, envCfg.DbName, envCfg.DbSchema);
 app.Run();
 

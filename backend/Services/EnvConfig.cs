@@ -1,21 +1,42 @@
 namespace SdKontrol.API.Services;
 
 /// <summary>
-/// SD/.env dosyasını okur; ortam değişkenleri varsa öncelik verir, yoksa appsettings.json varsayılanlarına düşer.
+/// SD/.env dosyasını hem geliştirme (SD/backend) hem de yayınlanmış standalone (SD/app veya SD/) konumundan otomatik bulup okur.
 /// </summary>
 public sealed class EnvConfig
 {
     private readonly Dictionary<string, string> _env = new(StringComparer.OrdinalIgnoreCase);
     private readonly IConfiguration _cfg;
     public string SdRootDir { get; }
+    public string AppDir { get; }
     public string EnvFilePath { get; }
 
     public EnvConfig(IConfiguration cfg, IWebHostEnvironment hostEnv)
     {
         _cfg = cfg;
-        SdRootDir = Path.GetFullPath(Path.Combine(hostEnv.ContentRootPath, ".."));
+        AppDir = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        SdRootDir = ResolveSdRoot(hostEnv.ContentRootPath, AppDir);
         EnvFilePath = Path.Combine(SdRootDir, ".env");
         LoadDotEnv(EnvFilePath);
+    }
+
+    private static string ResolveSdRoot(string contentRoot, string baseDir)
+    {
+        // Aday klasörler: önce çalışma dizini ve üstü, sonra exe dizini ve üstü (.env veya *.xlsx olan yer)
+        var candidates = new[]
+        {
+            contentRoot,
+            Path.GetFullPath(Path.Combine(contentRoot, "..")),
+            baseDir,
+            Path.GetFullPath(Path.Combine(baseDir, ".."))
+        };
+
+        foreach (var c in candidates)
+        {
+            if (Directory.Exists(c) && (File.Exists(Path.Combine(c, ".env")) || File.Exists(Path.Combine(c, ".env.example"))))
+                return c;
+        }
+        return Path.GetFullPath(Path.Combine(contentRoot, ".."));
     }
 
     private void LoadDotEnv(string path)
@@ -60,7 +81,7 @@ public sealed class EnvConfig
                 return $"Host={DbHost};Port={DbPort};Database={DbName};Username={DbUser};Password={DbPassword};SearchPath={DbSchema}";
             }
             return _cfg.GetConnectionString("SdDb")
-                ?? $"Host=localhost;Port=5432;Database=ud_kokpit;Username=postgres;Password=563563;SearchPath=sd";
+                ?? $"Host=localhost;Port=5432;Database=ud_kokpit;Username=postgres;Password=563563;SearchPath={DbSchema}";
         }
     }
 
