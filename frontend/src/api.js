@@ -38,7 +38,12 @@ export const api = {
       body: JSON.stringify(body),
     }),
   va01VbsUrl: (surecNo) => `/api/talepler/${surecNo}/va01-script.vbs`,
-  aiDenetim: (surecNo) => request(`/talepler/${surecNo}/ai-denetim`, { method: 'POST' }),
+  aiDenetim: (surecNo, body = {}) =>
+    request(`/talepler/${surecNo}/ai-denetim`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
   aiSozlesmeKiyas: (surecNo, { file, metin }) => {
     const fd = new FormData();
     if (file) fd.append('file', file);

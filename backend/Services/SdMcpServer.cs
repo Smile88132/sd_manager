@@ -400,11 +400,12 @@ public sealed class SdMcpServer
             new JsonObject
             {
                 ["name"] = "sd_talep_dataframe",
-                ["description"] = "Tek bir SD sürecinin başlık alanlarını, tüm kalemlerini (DataFrame), kural motoru bulgularını ve onay durumunu döner. SD yorumu/denetimi için ana veri kaynağıdır.",
+                ["description"] = "Tek bir SD sürecinin başlık alanlarını ve tüm kalemlerini DataFrame olarak döner. kurallari_dahil_et=false verilirse sistem kural seti eklenmez, yalnızca ham veritabanı verisi döner.",
                 ["inputSchema"] = Sema(new JsonObject
                 {
                     ["surec_no"] = P("integer", "SD süreç numarası (örn: 20609365)"),
-                    ["format"] = P("string", "markdown (varsayılan) | json | csv")
+                    ["format"] = P("string", "markdown (varsayılan) | json | csv"),
+                    ["kurallari_dahil_et"] = P("boolean", "Varsayılan true. false ise iç kural motoru bulguları eklenmez, saf veri döner.")
                 }, "surec_no")
             },
             new JsonObject
@@ -422,10 +423,11 @@ public sealed class SdMcpServer
             new JsonObject
             {
                 ["name"] = "sd_kalemler_dataframe",
-                ["description"] = "Tek bir SD sürecinin başlık + kalem + kural durumu + eksik alan bilgilerini birleştirilmiş düz DataFrame (JSON records dizisi) olarak döner. LLM Suite 'Type Convert -> DataFrame' veya Pandas analizi için idealdir.",
+                ["description"] = "Tek bir SD sürecinin başlık + kalem bilgilerini birleştirilmiş düz DataFrame (JSON records dizisi) olarak döner. LLM Suite 'Type Convert -> DataFrame' veya Pandas analizi için idealdir.",
                 ["inputSchema"] = Sema(new JsonObject
                 {
-                    ["surec_no"] = P("integer", "SD süreç numarası (örn: 20609365)")
+                    ["surec_no"] = P("integer", "SD süreç numarası (örn: 20609365)"),
+                    ["kurallari_dahil_et"] = P("boolean", "Varsayılan true. false ise iç kural motoru sütunları eklenmez, saf veri döner.")
                 }, "surec_no")
             },
             new JsonObject
@@ -465,8 +467,8 @@ public sealed class SdMcpServer
         return ad switch
         {
             "sd_talep_listesi" => await TalepListesiAsync(Str(a, "kontrol_durumu"), Str(a, "ara"), Int(a, "limit") ?? 50),
-            "sd_talep_dataframe" => await TalepDataFrameAsync(Long(a, "surec_no"), Str(a, "format") ?? "markdown"),
-            "sd_kalemler_dataframe" => await KalemlerBirlesikDataFrameJsonAsync(Long(a, "surec_no")),
+            "sd_talep_dataframe" => await TalepDataFrameAsync(Long(a, "surec_no"), Str(a, "format") ?? "markdown", Bool(a, "kurallari_dahil_et", true)),
+            "sd_kalemler_dataframe" => await KalemlerBirlesikDataFrameJsonAsync(Long(a, "surec_no"), Bool(a, "kurallari_dahil_et", true)),
             "sd_kural_kontrolu" => await KuralKontroluAsync(Long(a, "surec_no")),
             "sd_eksik_alan_analizi" => await EksikAlanAnaliziAsync(Long(a, "surec_no")),
             "sd_yorum_kaydet" => await YorumKaydetAsync(Long(a, "surec_no"), Str(a, "yorum") ?? "", Str(a, "baslik")),
@@ -545,23 +547,31 @@ public sealed class SdMcpServer
         return sb.ToString();
     }
 
-    private async Task<string> TalepDataFrameAsync(long surecNo, string format)
+    private async Task<string> TalepDataFrameAsync(long surecNo, string format, bool kurallariDahilEt = true)
     {
         var (talep, kalemler, onay) = await TalepGetirAsync(surecNo);
         if (talep == null && kalemler.Count == 0) return $"Süreç {surecNo} veritabanında bulunamadı.";
-        var kontrol = SdRuleEngine.Degerlendir(talep, kalemler, onay?.GetValueOrDefault("onay_durumu") as string);
+        var kontrol = kurallariDahilEt ? SdRuleEngine.Degerlendir(talep, kalemler, onay?.GetValueOrDefault("onay_durumu") as string) : null;
 
         format = (format ?? "markdown").Trim().ToLowerInvariant();
         if (format == "json")
         {
-            return JsonSerializer.Serialize(new
-            {
-                surec_no = surecNo,
-                talep_basligi = talep?.ToDictionary(k => k.Key, v => Deger(v.Value)),
-                kalemler = kalemler.Select(k => k.ToDictionary(x => x.Key, x => Deger(x.Value))),
-                kural_motoru = kontrol,
-                onay = onay?.ToDictionary(k => k.Key, v => Deger(v.Value))
-            }, new JsonSerializerOptions { WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
+            object jsonObj = kurallariDahilEt
+                ? new
+                {
+                    surec_no = surecNo,
+                    talep_basligi = talep?.ToDictionary(k => k.Key, v => Deger(v.Value)),
+                    kalemler = kalemler.Select(k => k.ToDictionary(x => x.Key, x => Deger(x.Value))),
+                    kural_motoru = kontrol,
+                    onay = onay?.ToDictionary(k => k.Key, v => Deger(v.Value))
+                }
+                : new
+                {
+                    surec_no = surecNo,
+                    talep_basligi = talep?.ToDictionary(k => k.Key, v => Deger(v.Value)),
+                    kalemler = kalemler.Select(k => k.ToDictionary(x => x.Key, x => Deger(x.Value)))
+                };
+            return JsonSerializer.Serialize(jsonObj, new JsonSerializerOptions { WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
         }
         if (format == "csv")
         {
@@ -577,9 +587,12 @@ public sealed class SdMcpServer
         var sb = new StringBuilder();
         sb.AppendLine($"# SD Süreç {surecNo} — {talep?.GetValueOrDefault("belge_no")}");
         sb.AppendLine();
-        sb.AppendLine($"**Kural Motoru:** {kontrol.GenelDurum} · Kırmızı: {kontrol.KirmiziSayisi} · Turuncu: {kontrol.TuruncuSayisi} · Sarı: {kontrol.SariSayisi} · VA01 açılabilir: {(kontrol.Va01Acilabilir ? "Evet" : "Hayır")}");
-        sb.AppendLine($"**Onay Durumu:** {onay?.GetValueOrDefault("onay_durumu") ?? "Bekliyor"}{(onay?.GetValueOrDefault("istisna_notu") is string n && n.Length > 0 ? $" · İstisna notu: {n}" : "")}");
-        sb.AppendLine();
+        if (kontrol != null)
+        {
+            sb.AppendLine($"**Kural Motoru:** {kontrol.GenelDurum} · Kırmızı: {kontrol.KirmiziSayisi} · Turuncu: {kontrol.TuruncuSayisi} · Sarı: {kontrol.SariSayisi} · VA01 açılabilir: {(kontrol.Va01Acilabilir ? "Evet" : "Hayır")}");
+            sb.AppendLine($"**Onay Durumu:** {onay?.GetValueOrDefault("onay_durumu") ?? "Bekliyor"}{(onay?.GetValueOrDefault("istisna_notu") is string n && n.Length > 0 ? $" · İstisna notu: {n}" : "")}");
+            sb.AppendLine();
+        }
         sb.AppendLine("## 1) Talep Başlığı");
         if (talep != null)
         {
@@ -596,15 +609,18 @@ public sealed class SdMcpServer
         sb.AppendLine();
         sb.AppendLine($"Kalem toplam tutarı: **{toplam.ToString("N2", new CultureInfo("tr-TR"))} {kalemler.Select(k => k.GetValueOrDefault("para_birimi")?.ToString()).FirstOrDefault(x => !string.IsNullOrWhiteSpace(x))}** · Orijinal sözleşme tutarı: **{Deger(talep?.GetValueOrDefault("orijinal_sozlesme_tutari")) ?? "-"}**");
         sb.AppendLine();
-        sb.AppendLine("## 3) Kural Motoru Bulguları");
-        if (kontrol.Bulgular.Count == 0) sb.AppendLine("Tüm kurallardan geçti.");
-        else
-            sb.AppendLine(MarkdownTablo(kontrol.Bulgular.Select(b => (IDictionary<string, object?>)new Dictionary<string, object?>
-            {
-                ["seviye"] = b.Seviye, ["kod"] = b.Kod, ["kalem"] = b.KalemNo, ["baslik"] = b.Baslik, ["detay"] = b.Detay
-            }).ToList()));
-        sb.AppendLine();
-        sb.AppendLine("## 4) DataFrame JSON (records)");
+        if (kontrol != null)
+        {
+            sb.AppendLine("## 3) Kural Motoru Bulguları");
+            if (kontrol.Bulgular.Count == 0) sb.AppendLine("Tüm kurallardan geçti.");
+            else
+                sb.AppendLine(MarkdownTablo(kontrol.Bulgular.Select(b => (IDictionary<string, object?>)new Dictionary<string, object?>
+                {
+                    ["seviye"] = b.Seviye, ["kod"] = b.Kod, ["kalem"] = b.KalemNo, ["baslik"] = b.Baslik, ["detay"] = b.Detay
+                }).ToList()));
+            sb.AppendLine();
+        }
+        sb.AppendLine("## DataFrame JSON (records)");
         sb.AppendLine("```json");
         sb.AppendLine(JsonSerializer.Serialize(kalemler.Select(k => kalemKolon.ToDictionary(c => c, c => Deger(k.GetValueOrDefault(c)))),
             new JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping }));
@@ -612,14 +628,14 @@ public sealed class SdMcpServer
         return sb.ToString();
     }
 
-    private async Task<string> KalemlerBirlesikDataFrameJsonAsync(long surecNo)
+    private async Task<string> KalemlerBirlesikDataFrameJsonAsync(long surecNo, bool kurallariDahilEt = true)
     {
         var (talep, kalemler, onay) = await TalepGetirAsync(surecNo);
         if (talep == null && kalemler.Count == 0)
             return "[]";
 
-        var kontrol = SdRuleEngine.Degerlendir(talep, kalemler, onay?.GetValueOrDefault("onay_durumu") as string);
-        var genelUyarilar = string.Join(" | ", kontrol.Bulgular.Where(b => b.KalemNo == null).Select(b => $"[{b.Seviye}:{b.Kod}] {b.Baslik}"));
+        var kontrol = kurallariDahilEt ? SdRuleEngine.Degerlendir(talep, kalemler, onay?.GetValueOrDefault("onay_durumu") as string) : null;
+        var genelUyarilar = kontrol != null ? string.Join(" | ", kontrol.Bulgular.Where(b => b.KalemNo == null).Select(b => $"[{b.Seviye}:{b.Kod}] {b.Baslik}")) : "";
 
         var baslikEksikler = new List<string>();
         if (talep != null)
@@ -635,7 +651,7 @@ public sealed class SdMcpServer
         var dfRows = kaynakSatirlar.Select(k =>
         {
             var kno = Int(new JsonObject { ["x"] = Deger(k.GetValueOrDefault("kalem_no")) }, "x");
-            var kalemUyarilar = string.Join(" | ", kontrol.Bulgular.Where(b => b.KalemNo == kno).Select(b => $"[{b.Seviye}:{b.Kod}] {b.Baslik}"));
+            var kalemUyarilar = kontrol != null ? string.Join(" | ", kontrol.Bulgular.Where(b => b.KalemNo == kno).Select(b => $"[{b.Seviye}:{b.Kod}] {b.Baslik}")) : "";
             var kalemEksikler = new List<string>();
             if (kalemler.Count > 0)
             {
@@ -645,7 +661,7 @@ public sealed class SdMcpServer
 
             var miktar = Dec(k.GetValueOrDefault("miktar"));
             var fiyat = Dec(k.GetValueOrDefault("birim_fiyat"));
-            return new Dictionary<string, object?>
+            var rec = new Dictionary<string, object?>
             {
                 ["surec_no"] = surecNo,
                 ["belge_no"] = Deger(talep?.GetValueOrDefault("belge_no")),
@@ -667,7 +683,6 @@ public sealed class SdMcpServer
                 ["kalem_no"] = kno,
                 ["ust_kalem"] = Deger(k.GetValueOrDefault("ust_kalem")),
                 ["malzeme_no"] = Deger(k.GetValueOrDefault("malzeme_no")),
-                ["hizmet_mi"] = SdRuleEngine.IsHizmetVeyaSanalMalzeme(Deger(k.GetValueOrDefault("malzeme_no")), Deger(k.GetValueOrDefault("kalem_tipi"))),
                 ["miktar"] = miktar,
                 ["olcu_birimi"] = Deger(k.GetValueOrDefault("olcu_birimi")),
                 ["birim_fiyat"] = fiyat,
@@ -679,13 +694,18 @@ public sealed class SdMcpServer
                 ["hazir_edim_tarihi"] = Deger(k.GetValueOrDefault("hazir_edim_tarihi")),
                 ["teslim_tarihi"] = Deger(k.GetValueOrDefault("teslim_tarihi")),
                 ["sozlesmesel_teslim_tarihi"] = Deger(k.GetValueOrDefault("sozlesmesel_teslim_tarihi")),
-                ["garanti_suresi"] = Deger(k.GetValueOrDefault("garanti_suresi_ham")),
-                ["kontrol_durumu"] = kontrol.GenelDurum,
-                ["baslik_eksik_alanlar"] = string.Join(", ", baslikEksikler),
-                ["kalem_eksik_alanlar"] = string.Join(", ", kalemEksikler),
-                ["baslik_kural_uyarilari"] = genelUyarilar,
-                ["kalem_kural_uyarilari"] = kalemUyarilar
+                ["garanti_suresi"] = Deger(k.GetValueOrDefault("garanti_suresi_ham"))
             };
+            if (kontrol != null)
+            {
+                rec["hizmet_mi"] = SdRuleEngine.IsHizmetVeyaSanalMalzeme(Deger(k.GetValueOrDefault("malzeme_no")), Deger(k.GetValueOrDefault("kalem_tipi")));
+                rec["kontrol_durumu"] = kontrol.GenelDurum;
+                rec["baslik_eksik_alanlar"] = string.Join(", ", baslikEksikler);
+                rec["kalem_eksik_alanlar"] = string.Join(", ", kalemEksikler);
+                rec["baslik_kural_uyarilari"] = genelUyarilar;
+                rec["kalem_kural_uyarilari"] = kalemUyarilar;
+            }
+            return rec;
         }).ToList();
 
         return JsonSerializer.Serialize(dfRows, new JsonSerializerOptions
@@ -875,6 +895,15 @@ public sealed class SdMcpServer
     private static int? Int(JsonObject a, string k) =>
         int.TryParse(Str(a, k), NumberStyles.Integer, Inv, out var i) ? i : null;
 
+    private static bool Bool(JsonObject a, string k, bool fallback)
+    {
+        var n = a[k];
+        if (n is JsonValue jv && jv.TryGetValue<bool>(out var b)) return b;
+        var s = Str(a, k);
+        if (s == null) return fallback;
+        return !s.Equals("false", StringComparison.OrdinalIgnoreCase) && s != "0";
+    }
+
     private static long Long(JsonObject a, string k)
     {
         var s = Str(a, k);
@@ -937,11 +966,10 @@ public sealed class SdMcpServer
     }
 
     /// <summary>LLM Suite akışına mesajla gömülecek kompakt veri özeti (MCP bağlı değilse yedek).</summary>
-    public async Task<string> SatirIciVeriAsync(long surecNo)
+    public async Task<string> SatirIciVeriAsync(long surecNo, bool kurallariDahilEt = false)
     {
-        var df = await TalepDataFrameAsync(surecNo, "markdown");
-        var eksik = await EksikAlanAnaliziAsync(surecNo);
-        var metin = df + "\n\n" + eksik;
+        var df = await TalepDataFrameAsync(surecNo, "markdown", kurallariDahilEt);
+        var metin = kurallariDahilEt ? df + "\n\n" + await EksikAlanAnaliziAsync(surecNo) : df;
         return metin.Length > 30000 ? metin[..30000] + "\n…(kısaltıldı)" : metin;
     }
 }

@@ -1,6 +1,7 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import { api } from './api.js';
+import RichAiMarkdown, { markdownToSafeHtml } from './RichAiMarkdown.jsx';
 
 const fmtNum = (v, d = 2) =>
   v == null || v === '' || isNaN(v) ? '-' : new Intl.NumberFormat('tr-TR', { maximumFractionDigits: d }).format(v);
@@ -352,6 +353,8 @@ function TalepDetay({ surecNo, health, onClose, onRefresh, onOpenSettings }) {
   // AI & LLM Suite (MCP) state
   const [aiCikti, setAiCikti] = useState('');
   const [aiBaslik, setAiBaslik] = useState('AI / LLM Suite Çıktısı');
+  const [kurallariDahilEt, setKurallariDahilEt] = useState(false); // Varsayılan: Bağımsız AI Yorumu (kural setimiz hariç)
+  const [aiGorunum, setAiGorunum] = useState('zengin'); // 'zengin' | 'koyu' | 'ham'
   const [llmEkTalimat, setLlmEkTalimat] = useState('');
   const [llmVeriyiEkle, setLlmVeriyiEkle] = useState(false);
   const [sozMetin, setSozMetin] = useState('');
@@ -425,11 +428,13 @@ function TalepDetay({ surecNo, health, onClose, onRefresh, onOpenSettings }) {
       const r = await api.llmSuiteAnaliz(surecNo, {
         ekTalimat: llmEkTalimat,
         veriyiEkle: llmVeriyiEkle,
+        kurallariDahilEt,
       });
-      setAiBaslik(`ASELSAN LLM Suite (MCP) Yorumu — ${(r.sureMs / 1000).toFixed(1)} sn`);
+      setAiBaslik(`${r.baslik || 'ASELSAN LLM Suite Yorumu'} — ${(r.sureMs / 1000).toFixed(1)} sn`);
       setAiCikti(r.yanit);
       toast.success('LLM Suite (MCP) SD yorumu alındı!');
       yukle();
+      onRefresh();
     } catch (e) {
       toast.error(e.message);
     } finally {
@@ -440,8 +445,12 @@ function TalepDetay({ surecNo, health, onClose, onRefresh, onOpenSettings }) {
   const onizleMcpDataFrame = async () => {
     setBusy(true);
     try {
-      const r = await api.mcpAracDene('sd_talep_dataframe', { surec_no: surecNo, format: 'markdown' });
-      setAiBaslik(`MCP DataFrame Önizleme (sd_talep_dataframe — Süreç ${surecNo})`);
+      const r = await api.mcpAracDene('sd_talep_dataframe', {
+        surec_no: surecNo,
+        format: 'markdown',
+        kurallari_dahil_et: kurallariDahilEt,
+      });
+      setAiBaslik(`MCP DataFrame Önizleme (Süreç ${surecNo} — ${kurallariDahilEt ? 'Kural Setli' : 'Saf Veri'})`);
       setAiCikti(r.metin || '');
     } catch (e) {
       toast.error(e.message);
@@ -453,13 +462,38 @@ function TalepDetay({ surecNo, health, onClose, onRefresh, onOpenSettings }) {
   const calistirAiDenetim = async () => {
     setBusy(true);
     try {
-      const r = await api.aiDenetim(surecNo);
-      setAiBaslik(`AI Uzman Denetimi (${r.model || ''})`);
+      const r = await api.aiDenetim(surecNo, {
+        kurallariDahilEt,
+        ekTalimat: llmEkTalimat,
+      });
+      setAiBaslik(`${r.baslik || 'AI Yorumu'} (${r.model || ''})`);
       setAiCikti(r.yanit);
-      toast.success('AI uzman denetimi tamamlandı.');
+      toast.success(kurallariDahilEt ? 'Şartname kural setli denetim tamamlandı.' : 'Bağımsız AI yorumu tamamlandı.');
       yukle();
+      onRefresh();
     } catch (e) { toast.error(e.message); }
     finally { setBusy(false); }
+  };
+
+  const bicimliKopyala = async () => {
+    try {
+      const html = `<div style="font-family:'Segoe UI',sans-serif;font-size:13.5px;line-height:1.6;color:#1e293b">${markdownToSafeHtml(aiCikti)}</div>`;
+      if (navigator.clipboard && window.ClipboardItem) {
+        await navigator.clipboard.write([
+          new window.ClipboardItem({
+            'text/html': new Blob([html], { type: 'text/html' }),
+            'text/plain': new Blob([aiCikti], { type: 'text/plain' }),
+          }),
+        ]);
+        toast.success('Fontlar, kalınlıklar, tablolar ve emojilerle birlikte biçimli kopyalandı!');
+      } else {
+        await navigator.clipboard.writeText(aiCikti);
+        toast.success('Panoya kopyalandı.');
+      }
+    } catch {
+      navigator.clipboard.writeText(aiCikti);
+      toast.success('Metin olarak panoya kopyalandı.');
+    }
   };
 
   const calistirSozlesmeKiyas = async () => {
@@ -713,15 +747,47 @@ function TalepDetay({ surecNo, health, onClose, onRefresh, onOpenSettings }) {
                 </button>
               </div>
 
+              {/* Kural Seti / Bağımsız Yorum Seçici */}
+              <div className="ai-mode-bar">
+                <div>
+                  <div style={{ fontWeight: 800, fontSize: 12.5, color: '#0f172a' }}>
+                    {kurallariDahilEt
+                      ? '📋 Şartname Kural Setli Mod Aktif'
+                      : '🧠 Bağımsız AI Yorumu Modu Aktif (Kural Setimiz Gönderilmez)'}
+                  </div>
+                  <div className="muted" style={{ fontSize: 11.5, color: '#475569' }}>
+                    {kurallariDahilEt
+                      ? 'AI hem ham verileri hem de UGES TYM Şartnamesi kural motoru bulgularımızı birlikte değerlendirir.'
+                      : 'AI’a kendi kural listemizi aktarmayız; yalnızca ham talep/kalem DataFrame verisini alıp kendi SAP SD bilgisiyle özgürce yorumlar.'}
+                  </div>
+                </div>
+                <div className="seg-group">
+                  <button
+                    type="button"
+                    className={`seg-btn ${!kurallariDahilEt ? 'active' : ''}`}
+                    onClick={() => setKurallariDahilEt(false)}
+                  >
+                    🧠 Sadece AI Kendi Bilgisiyle Yorumlasın
+                  </button>
+                  <button
+                    type="button"
+                    className={`seg-btn ${kurallariDahilEt ? 'active' : ''}`}
+                    onClick={() => setKurallariDahilEt(true)}
+                  >
+                    📋 Kural Setimizi de Dahil Et
+                  </button>
+                </div>
+              </div>
+
               {/* Ana Özellik: LLM Suite Flow + MCP DataFrame Yorumlayıcı */}
               <div className="llmsuite-hero">
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
                   <div>
                     <h3 style={{ margin: 0, fontSize: 14, color: '#1e3a8a' }}>
-                      ✦ ASELSAN LLM Suite Flow — MCP DataFrame ile Eksik & Tutarsızlık Yorumu
+                      ✦ ASELSAN LLM Suite Flow — MCP DataFrame ile SD Yorumu
                     </h3>
                     <small className="muted" style={{ color: '#475569' }}>
-                      LLM Suite akışındaki Agent, bağımsız MCP portundan (<code>:{health?.mcpPort || 5101}</code>) bu sürecin başlık + kalem DataFrame verisini ve eksik alan analizini çekerek eksiklikleri telafi edici yorum üretir.
+                      LLM Suite akışı MCP portundan (<code>:{health?.mcpPort || 5101}</code>) DataFrame verisini çeker; akışta tanımladığınız font, vurgu, tablo ve emojileri koruyarak ekrana getirir.
                     </small>
                   </div>
                   <span className={`badge ${health?.llmSuiteHazir ? 'green' : 'amber'}`}>
@@ -731,13 +797,13 @@ function TalepDetay({ surecNo, health, onClose, onRefresh, onOpenSettings }) {
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 8 }}>
                   <input
                     style={{ flex: '1 1 320px' }}
-                    placeholder="Opsiyonel ek soru/odak (Örn: Benzer geçmiş siparişlere göre ödeme koşulu ve PYP yapısını da yorumla)..."
+                    placeholder="Opsiyonel ek soru/odak (hem LLM Suite hem hızlı AI yorumunda kullanılır)..."
                     value={llmEkTalimat}
                     onChange={(e) => setLlmEkTalimat(e.target.value)}
                   />
                   <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600 }}>
                     <input type="checkbox" checked={llmVeriyiEkle} onChange={(e) => setLlmVeriyiEkle(e.target.checked)} />
-                    DataFrame'i mesaja da göm (MCP erişimi yoksa yedek)
+                    DataFrame'i mesaja da göm (MCP yedek)
                   </label>
                 </div>
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -745,19 +811,23 @@ function TalepDetay({ surecNo, health, onClose, onRefresh, onOpenSettings }) {
                     {busy ? 'LLM Suite yanıtı bekleniyor...' : '🚀 LLM Suite (MCP) Yorumunu Getir'}
                   </button>
                   <button className="btn" disabled={busy} onClick={onizleMcpDataFrame}>
-                    📊 MCP DataFrame Çıktısını Önizle
+                    📊 Gönderilecek DataFrame'i Önizle
                   </button>
                 </div>
               </div>
 
               <div style={{ padding: '0 14px 14px', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(290px, 1fr))', gap: 12 }}>
                 <div className="panel" style={{ margin: 0, padding: 12 }}>
-                  <h4 style={{ margin: '0 0 6px' }}>1. Doğrudan Model Denetimi (aselixai)</h4>
-                  <p className="muted" style={{ margin: '0 0 10px', whiteSpace: 'normal' }}>
-                    HIZMET vs fiziksel teslimat ayrımını, alt kalem bağlantılarını, kalem tiplerini ve hazır edim marjını şartnameye göre yorumlar.
+                  <h4 style={{ margin: '0 0 6px' }}>
+                    1. Doğrudan Model Yorumu ({kurallariDahilEt ? 'Şartname Kurallı' : 'Bağımsız / Kuralsız'})
+                  </h4>
+                  <p className="muted" style={{ margin: '0 0 10px', whiteSpace: 'normal', color: '#64748b' }}>
+                    {kurallariDahilEt
+                      ? 'UGES TYM şartname kurallarını ve kalem/BOM/HIZMET yapısını birlikte denetler.'
+                      : 'Kural setimizi göndermeden doğrudan modelin kendi SAP SD ve ticari sipariş tecrübesiyle yorum üretir.'}
                   </p>
                   <button className="btn primary" disabled={busy} onClick={calistirAiDenetim}>
-                    {busy ? 'Analiz ediliyor...' : '✦ Hızlı AI Denetimi Çalıştır'}
+                    {busy ? 'Analiz ediliyor...' : kurallariDahilEt ? '✦ Kurallı AI Denetimi Çalıştır' : '🧠 Bağımsız AI Yorumu Çalıştır'}
                   </button>
                 </div>
 
@@ -798,9 +868,20 @@ function TalepDetay({ surecNo, health, onClose, onRefresh, onOpenSettings }) {
 
               {aiCikti && (
                 <div style={{ padding: '0 14px 14px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 6 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
                     <b>{aiBaslik}</b>
-                    <div style={{ display: 'flex', gap: 6 }}>
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                      <div className="seg-group">
+                        <button type="button" className={`seg-btn ${aiGorunum === 'zengin' ? 'active' : ''}`} onClick={() => setAiGorunum('zengin')}>
+                          ✨ Zengin (Açık)
+                        </button>
+                        <button type="button" className={`seg-btn ${aiGorunum === 'koyu' ? 'active' : ''}`} onClick={() => setAiGorunum('koyu')}>
+                          🌙 Zengin (Koyu)
+                        </button>
+                        <button type="button" className={`seg-btn ${aiGorunum === 'ham' ? 'active' : ''}`} onClick={() => setAiGorunum('ham')}>
+                          {'{ }'} Ham Metin
+                        </button>
+                      </div>
                       <button
                         className="btn"
                         onClick={() => {
@@ -811,12 +892,16 @@ function TalepDetay({ surecNo, health, onClose, onRefresh, onOpenSettings }) {
                       >
                         ↳ Kontrol Notuna Aktar
                       </button>
-                      <button className="btn" onClick={() => { navigator.clipboard.writeText(aiCikti); toast.success('Panoya kopyalandı.'); }}>
-                        Kopyala
+                      <button className="btn" onClick={bicimliKopyala}>
+                        📋 Biçimli Kopyala
                       </button>
                     </div>
                   </div>
-                  <div className="ai-box">{aiCikti}</div>
+                  {aiGorunum === 'ham' ? (
+                    <div className="ai-box">{aiCikti}</div>
+                  ) : (
+                    <RichAiMarkdown text={aiCikti} dark={aiGorunum === 'koyu'} />
+                  )}
                 </div>
               )}
 
@@ -1064,6 +1149,174 @@ function TalepDetay({ surecNo, health, onClose, onRefresh, onOpenSettings }) {
   );
 }
 
+const KANBAN_KOLONLARI = [
+  { key: 'ENGEL', icon: '🔴', baslik: 'Engel Var', aciklama: 'Eksik/hatalı zorunlu alan' },
+  { key: 'UYARI', icon: '🟠', baslik: 'İnceleme & Onay Bekleyen', aciklama: 'Uyarı incelemesi bekliyor' },
+  { key: 'ONAYLI', icon: '🔵', baslik: 'Onaylandı (VA01 Hazır)', aciklama: 'İstisna/kontrol onayı verildi' },
+  { key: 'HAZIR', icon: '🟢', baslik: 'Kusursuz Hazır', aciklama: 'Doğrudan SAP VA01 açılabilir' },
+];
+
+function basHarfler(ad) {
+  if (!ad) return '?';
+  const parcalar = String(ad).trim().split(/\s+/).filter(Boolean);
+  if (parcalar.length === 1) return parcalar[0].slice(0, 2).toUpperCase();
+  return (parcalar[0][0] + parcalar[parcalar.length - 1][0]).toUpperCase();
+}
+
+function KanbanPanosu({ rows, kanbanGrup, onSelect }) {
+  const [kolonLimit, setKolonLimit] = useState({});
+
+  const kolonlar = useMemo(() => {
+    if (kanbanGrup === 'akis') {
+      const harita = new Map();
+      for (const r of rows) {
+        const k = r.akis_durumu || '(Akış Durumu Boş)';
+        if (!harita.has(k)) harita.set(k, []);
+        harita.get(k).push(r);
+      }
+      return Array.from(harita.entries()).map(([k, list]) => ({
+        key: k,
+        cls: '',
+        icon: '📌',
+        baslik: k,
+        aciklama: 'İş akışı adımı',
+        items: list,
+      }));
+    }
+    return KANBAN_KOLONLARI.map((c) => ({
+      ...c,
+      cls: c.key,
+      items: rows.filter((r) => r.kontrol_durumu === c.key),
+    }));
+  }, [rows, kanbanGrup]);
+
+  return (
+    <div
+      className="kanban-board"
+      style={
+        kanbanGrup === 'akis'
+          ? { gridTemplateColumns: `repeat(${Math.max(1, kolonlar.length)}, minmax(300px, 1fr))` }
+          : undefined
+      }
+    >
+      {kolonlar.map((col) => {
+        const gosterilen = kolonLimit[col.key] || 35;
+        const dilim = col.items.slice(0, gosterilen);
+        const kalan = col.items.length - dilim.length;
+        return (
+          <div key={col.key} className={`kanban-col ${col.cls}`}>
+            <div className="kanban-col-head">
+              <div>
+                <div className="kanban-col-title">
+                  <span>{col.icon}</span>
+                  <span>{col.baslik}</span>
+                </div>
+                <div className="muted" style={{ fontSize: 11 }}>{col.aciklama}</div>
+              </div>
+              <span className="kanban-count">{col.items.length}</span>
+            </div>
+
+            <div className="kanban-col-body">
+              {dilim.length === 0 ? (
+                <div className="empty" style={{ padding: 18, fontSize: 12 }}>Bu sütunda talep yok</div>
+              ) : (
+                dilim.map((r) => (
+                  <div
+                    key={r.surec_no}
+                    className={`kanban-card ${r.kontrol_durumu || ''}`}
+                    onClick={() => onSelect(r.surec_no)}
+                  >
+                    <div className="kc-top">
+                      <span className="kc-surec">#{r.surec_no}</span>
+                      <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>
+                        {r.siparis_turu && <span className="badge gray">{r.siparis_turu}</span>}
+                        {r.ai_yorum_sayisi > 0 && (
+                          <span className="badge purple" title="Kaydedilmiş AI / LLM Suite yorumu mevcut">
+                            🤖 {r.ai_yorum_sayisi}
+                          </span>
+                        )}
+                        {r.va01_acildi_mi ? (
+                          <span className="badge green">✓ VA01 {r.girilen_sd_no || 'Açıldı'}</span>
+                        ) : r.va01_acilabilir ? (
+                          <span className="badge blue">VA01 Hazır</span>
+                        ) : null}
+                      </div>
+                    </div>
+
+                    <div className="kc-customer" title={r.siparis_veren || ''}>
+                      {r.siparis_veren || <span className="muted" style={{ fontWeight: 500 }}>Sipariş Veren Belirtilmemiş</span>}
+                    </div>
+
+                    {(r.sozlesme_adi || r.belge_no) && (
+                      <div className="kc-sub" title={r.sozlesme_adi || r.belge_no}>
+                        {r.belge_no ? `${r.belge_no}` : ''}{r.sozlesme_adi ? ` · ${r.sozlesme_adi}` : ''}
+                      </div>
+                    )}
+
+                    <div className="kc-chips">
+                      {r.crm_teklif_no ? (
+                        <span className="kc-chip" title="CRM Teklif No">CRM: {r.crm_teklif_no}</span>
+                      ) : (
+                        <span className="kc-chip missing">CRM Boş</span>
+                      )}
+                      {r.aselsan_sozlesme_no && r.aselsan_sozlesme_no !== 'SS' && (
+                        <span className="kc-chip" title="ASELSAN Sözleşme No">Söz: {r.aselsan_sozlesme_no}</span>
+                      )}
+                      <span className={`kc-chip ${!r.kalem_sayisi ? 'missing' : ''}`}>
+                        📦 {r.kalem_sayisi || 0} kalem
+                      </span>
+                    </div>
+
+                    {r.onecikan_bulgu && (
+                      <div className="kc-issue" title={r.onecikan_bulgu}>
+                        {r.kirmizi_sayisi > 0 ? '🔴 ' : r.turuncu_sayisi > 0 ? '🟠 ' : '🟡 '}
+                        {r.onecikan_bulgu}
+                      </div>
+                    )}
+
+                    <div className="kc-foot">
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+                        <span className="kc-avatar">{basHarfler(r.talep_eden)}</span>
+                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.talep_eden_departman || ''}>
+                          {r.talep_eden || '-'}
+                        </span>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0 }}>
+                        {(r.kirmizi_sayisi > 0 || r.turuncu_sayisi > 0 || r.sari_sayisi > 0) && (
+                          <span style={{ fontSize: 10.5, fontWeight: 700 }}>
+                            {r.kirmizi_sayisi > 0 ? `🔴${r.kirmizi_sayisi} ` : ''}
+                            {r.turuncu_sayisi > 0 ? `🟠${r.turuncu_sayisi} ` : ''}
+                            {r.sari_sayisi > 0 ? `🟡${r.sari_sayisi}` : ''}
+                          </span>
+                        )}
+                        {r.kalem_toplam_tutar != null && (
+                          <span className="kc-amount">
+                            {fmtNum(r.kalem_toplam_tutar, 0)} {r.para_birimi || ''}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+
+              {kalan > 0 && (
+                <button
+                  className="btn"
+                  style={{ justifyContent: 'center', width: '100%' }}
+                  onClick={() => setKolonLimit((p) => ({ ...p, [col.key]: gosterilen + 40 }))}
+                >
+                  Daha Fazla Göster (+{kalan})
+                </button>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export default function App() {
   const [health, setHealth] = useState(null);
   const [ozet, setOzet] = useState(null);
@@ -1072,6 +1325,8 @@ export default function App() {
   const [ara, setAra] = useState('');
   const [durum, setDurum] = useState('');
   const [kontrolDurumu, setKontrolDurumu] = useState('');
+  const [gorunum, setGorunum] = useState('kanban'); // 'kanban' | 'tablo'
+  const [kanbanGrup, setKanbanGrup] = useState('kontrol'); // 'kontrol' | 'akis'
   const [busy, setBusy] = useState(false);
   const [uyarilar, setUyarilar] = useState([]);
   const [secili, setSecili] = useState(null);
@@ -1182,13 +1437,49 @@ export default function App() {
 
       <div className="panel">
         <div className="panel-head">
-          <h2>SD Talepleri ({rows.length})</h2>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <h2>SD Talepleri ({rows.length})</h2>
+            <div className="seg-group">
+              <button
+                type="button"
+                className={`seg-btn ${gorunum === 'kanban' ? 'active' : ''}`}
+                onClick={() => setGorunum('kanban')}
+              >
+                ▦ Kanban Kartları
+              </button>
+              <button
+                type="button"
+                className={`seg-btn ${gorunum === 'tablo' ? 'active' : ''}`}
+                onClick={() => setGorunum('tablo')}
+              >
+                ☰ Liste Tablosu
+              </button>
+            </div>
+            {gorunum === 'kanban' && (
+              <div className="seg-group">
+                <button
+                  type="button"
+                  className={`seg-btn ${kanbanGrup === 'kontrol' ? 'active' : ''}`}
+                  onClick={() => setKanbanGrup('kontrol')}
+                >
+                  Kontrol Durumuna Göre
+                </button>
+                <button
+                  type="button"
+                  className={`seg-btn ${kanbanGrup === 'akis' ? 'active' : ''}`}
+                  onClick={() => setKanbanGrup('akis')}
+                >
+                  Akış Durumuna Göre
+                </button>
+              </div>
+            )}
+          </div>
           <div className="toolbar">
             <input
-              placeholder="Süreç / Belge / SD No / CRM / Malzeme / Kişi ara..."
+              placeholder="Süreç / Müşteri / Sözleşme / Belge / CRM / Malzeme / Kişi ara..."
               value={ara}
               onChange={(e) => setAra(e.target.value)}
-              style={{ width: 320 }}
+              style={{ width: 340 }}
             />
             <select value={kontrolDurumu} onChange={(e) => setKontrolDurumu(e.target.value)}>
               <option value="">Tüm Kontrol Durumları</option>
@@ -1205,54 +1496,61 @@ export default function App() {
             </select>
           </div>
         </div>
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Kontrol Durumu</th><th>Bulgular</th><th>Süreç No</th><th>Belge No</th><th>Tür</th>
-                <th>CRM Teklif</th><th>ASELSAN Söz.</th><th>Talep Eden</th><th className="num">Kalem</th>
-                <th className="num">Kalem Toplamı</th><th className="num">Sözleşme Tutarı</th><th>Akış Durumu</th><th>VA01</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r) => {
-                const et = KONTROL_ETIKET[r.kontrol_durumu] || { cls: 'gray', text: r.kontrol_durumu };
-                return (
-                  <tr key={r.surec_no} className="clickable" onClick={() => setSecili(r.surec_no)}>
-                    <td><span className={`badge ${et.cls}`}>{et.text}</span></td>
-                    <td>
-                      {r.kirmizi_sayisi > 0 && <span className="badge red" style={{ marginRight: 4 }}>🔴 {r.kirmizi_sayisi}</span>}
-                      {r.turuncu_sayisi > 0 && <span className="badge orange" style={{ marginRight: 4 }}>🟠 {r.turuncu_sayisi}</span>}
-                      {r.sari_sayisi > 0 && <span className="badge amber">🟡 {r.sari_sayisi}</span>}
-                    </td>
-                    <td><b>{r.surec_no}</b></td>
-                    <td>{r.belge_no}</td>
-                    <td>{r.siparis_turu || '-'}</td>
-                    <td>{r.crm_teklif_no || <span className="badge red">BOŞ</span>}</td>
-                    <td>{r.aselsan_sozlesme_no || '-'}</td>
-                    <td title={r.talep_eden_departman}>{r.talep_eden || '-'}</td>
-                    <td className="num">{r.kalem_sayisi || <span className="badge red">0</span>}</td>
-                    <td className="num">{r.kalem_toplam_tutar != null ? `${fmtNum(r.kalem_toplam_tutar)} ${r.para_birimi || ''}` : '-'}</td>
-                    <td className="num">{fmtNum(r.orijinal_sozlesme_tutari)}</td>
-                    <td>{r.akis_durumu || '-'}</td>
-                    <td>
-                      {r.va01_acildi_mi ? (
-                        <span className="badge green">Açıldı {r.girilen_sd_no ? `(${r.girilen_sd_no})` : ''}</span>
-                      ) : r.va01_acilabilir ? (
-                        <span className="badge blue">Hazır</span>
-                      ) : (
-                        <span className="muted">-</span>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-              {rows.length === 0 && (
-                <tr><td colSpan={13} className="empty">Seçilen filtreye uygun talep bulunamadı.</td></tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+
+        {gorunum === 'kanban' ? (
+          <KanbanPanosu rows={rows} kanbanGrup={kanbanGrup} onSelect={(sno) => setSecili(sno)} />
+        ) : (
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Kontrol Durumu</th><th>Bulgular</th><th>Süreç No</th><th>Sipariş Veren</th><th>Belge No</th><th>Tür</th>
+                  <th>CRM Teklif</th><th>ASELSAN Söz.</th><th>Talep Eden</th><th className="num">Kalem</th>
+                  <th className="num">Kalem Toplamı</th><th className="num">Sözleşme Tutarı</th><th>Akış Durumu</th><th>VA01</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r) => {
+                  const et = KONTROL_ETIKET[r.kontrol_durumu] || { cls: 'gray', text: r.kontrol_durumu };
+                  return (
+                    <tr key={r.surec_no} className="clickable" onClick={() => setSecili(r.surec_no)}>
+                      <td><span className={`badge ${et.cls}`}>{et.text}</span></td>
+                      <td>
+                        {r.kirmizi_sayisi > 0 && <span className="badge red" style={{ marginRight: 4 }}>🔴 {r.kirmizi_sayisi}</span>}
+                        {r.turuncu_sayisi > 0 && <span className="badge orange" style={{ marginRight: 4 }}>🟠 {r.turuncu_sayisi}</span>}
+                        {r.sari_sayisi > 0 && <span className="badge amber">🟡 {r.sari_sayisi}</span>}
+                        {r.ai_yorum_sayisi > 0 && <span className="badge purple" style={{ marginLeft: 4 }}>🤖 {r.ai_yorum_sayisi}</span>}
+                      </td>
+                      <td><b>{r.surec_no}</b></td>
+                      <td style={{ maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.siparis_veren || '-'}</td>
+                      <td>{r.belge_no}</td>
+                      <td>{r.siparis_turu || '-'}</td>
+                      <td>{r.crm_teklif_no || <span className="badge red">BOŞ</span>}</td>
+                      <td>{r.aselsan_sozlesme_no || '-'}</td>
+                      <td title={r.talep_eden_departman}>{r.talep_eden || '-'}</td>
+                      <td className="num">{r.kalem_sayisi || <span className="badge red">0</span>}</td>
+                      <td className="num">{r.kalem_toplam_tutar != null ? `${fmtNum(r.kalem_toplam_tutar)} ${r.para_birimi || ''}` : '-'}</td>
+                      <td className="num">{fmtNum(r.orijinal_sozlesme_tutari)}</td>
+                      <td>{r.akis_durumu || '-'}</td>
+                      <td>
+                        {r.va01_acildi_mi ? (
+                          <span className="badge green">Açıldı {r.girilen_sd_no ? `(${r.girilen_sd_no})` : ''}</span>
+                        ) : r.va01_acilabilir ? (
+                          <span className="badge blue">Hazır</span>
+                        ) : (
+                          <span className="muted">-</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+                {rows.length === 0 && (
+                  <tr><td colSpan={14} className="empty">Seçilen filtreye uygun talep bulunamadı.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       {secili && (

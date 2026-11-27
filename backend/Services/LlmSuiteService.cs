@@ -43,19 +43,24 @@ public sealed class LlmSuiteService
     public bool Yapilandirildi =>
         !string.IsNullOrWhiteSpace(_env.LlmSuiteBaseUrl) && !string.IsNullOrWhiteSpace(_env.LlmSuiteFlowId) && !string.IsNullOrWhiteSpace(_env.LlmSuiteApiKey);
 
-    public static string VarsayilanPrompt(long surecNo, string? ekTalimat) =>
-$@"UGES TYM SAP SD (VA01) giriş uzmanı olarak SD süreç no **{surecNo}** için kapsamlı denetim ve eksik tamamlama analizi yap.
+    public static string VarsayilanPrompt(long surecNo, string? ekTalimat, bool kurallariDahilEt = false)
+    {
+        if (!kurallariDahilEt)
+        {
+            return $@"SD süreç no **{surecNo}** için bağımsız SAP SD ve veri tutarlılığı analizi yap.
 
-1. MCP aracı `sd_talep_dataframe` ve/veya `sd_kalemler_dataframe` ile `surec_no={surecNo}` başlık + kalem DataFrame verisini al.
-2. MCP aracı `sd_eksik_alan_analizi` ile `surec_no={surecNo}` eksik/tutarsız alanları al.
-3. Gerekirse `sd_kural_kontrolu` ve `sd_sql_sorgu` (salt okunur) ile aynı müşteri veya malzemenin geçmiş SD taleplerinden referans değerleri (müşteri kodu, ödeme koşulu, incoterms, birim fiyat, PYP yapısı) kontrol et.
+1. MCP aracı `sd_talep_dataframe` (`surec_no={surecNo}`, `kurallari_dahil_et=false`) veya `sd_kalemler_dataframe` (`surec_no={surecNo}`, `kurallari_dahil_et=false`) ile yalnızca veritabanındaki ham başlık ve kalem DataFrame verilerini çek (sistemin iç kural motorunu çağırma).
+2. İhtiyaç duyarsan `sd_sql_sorgu` ile veritabanındaki geçmiş benzer sipariş/müşteri/malzeme kayıtlarına bakabilirsin.
+3. Kendi SAP SD, ERP, ticari sipariş ve tedarik zinciri bilginle verilerdeki eksiklikleri, riskleri, dikkat çeken noktaları ve telafi önerilerini özgürce yorumla.
+4. Akış sistem mesajında tanımlı tüm font, renk, Markdown tablo, vurgu ve simge/emoji formatlarını eksiksiz koruyarak Türkçe yanıt üret.{(string.IsNullOrWhiteSpace(ekTalimat) ? "" : $"\n\nEk talimat: {ekTalimat}")}";
+        }
 
-Yanıtını Türkçe ve şu başlıklarla net şekilde yaz:
-## 1. Genel Değerlendirme (VA01'e girilebilir mi?)
-## 2. Eksik / Hatalı Alanlar ve Telafi Önerileri (Alan — Mevcut Değer — Önerilen Değer / Aksiyon)
-## 3. Kalem, Fiyat & BOM / Hizmet Yapısı Yorumu
-## 4. Talep Sahibinden / İlgili Birimden İstenecekler
-{(string.IsNullOrWhiteSpace(ekTalimat) ? "" : $"\nEk talimat: {ekTalimat}")}";
+        return $@"UGES TYM SAP SD (VA01) giriş uzmanı olarak SD süreç no **{surecNo}** için kapsamlı kural + eksik tamamlama analizi yap.
+
+1. MCP aracı `sd_talep_dataframe` (`surec_no={surecNo}`, `kurallari_dahil_et=true`) ile başlık + kalem DataFrame ve kural bulgularını al.
+2. MCP aracı `sd_eksik_alan_analizi` (`surec_no={surecNo}`) ile eksik/tutarsız alanları al; gerekirse `sd_sql_sorgu` ile geçmiş referansları kontrol et.
+3. Akış sistem mesajında tanımlı tüm font, renk, Markdown tablo, vurgu ve simge/emoji formatlarını eksiksiz koruyarak Türkçe yanıt üret.{(string.IsNullOrWhiteSpace(ekTalimat) ? "" : $"\n\nEk talimat: {ekTalimat}")}";
+    }
 
     public async Task<LlmSuiteSonuc> CalistirAsync(string mesaj, string? sessionId, CancellationToken ct,
         string? baseUrl = null, string? flowId = null, string? apiKey = null, int? timeoutSec = null)

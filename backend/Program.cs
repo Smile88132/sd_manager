@@ -186,20 +186,21 @@ api.MapPost("/talepler/{surecNo:long}/llmsuite-analiz", async (long surecNo, Llm
     if (var_ == 0) return Results.NotFound(new { hata = "Talep bulunamadı." });
 
     var mesaj = string.IsNullOrWhiteSpace(dto.OzelPrompt)
-        ? LlmSuiteService.VarsayilanPrompt(surecNo, dto.EkTalimat)
+        ? LlmSuiteService.VarsayilanPrompt(surecNo, dto.EkTalimat, dto.KurallariDahilEt)
         : dto.OzelPrompt.Replace("{surec_no}", surecNo.ToString());
 
     if (dto.VeriyiEkle)
-        mesaj += "\n\n---\n[MCP erişimi yoksa kullanılacak SD VERİSİ (DataFrame)]\n" + await mcp.SatirIciVeriAsync(surecNo);
+        mesaj += "\n\n---\n[MCP erişimi yoksa kullanılacak SD VERİSİ (DataFrame)]\n" + await mcp.SatirIciVeriAsync(surecNo, dto.KurallariDahilEt);
 
     var r = await llm.CalistirAsync(mesaj, $"uges-sd-{surecNo}-{DateTime.Now:yyyyMMddHHmmss}", ct);
     if (!r.Ok) return Results.BadRequest(new { hata = r.Hata, ham = r.HamYanit, sureMs = r.SureMs });
 
     var model = $"ASELSAN LLM Suite Flow{(string.IsNullOrWhiteSpace(r.Model) ? "" : $" / {r.Model}")}";
+    var logBaslik = dto.KurallariDahilEt ? "LLM Suite (MCP + Kural Setli)" : "LLM Suite (MCP — Bağımsız Yorum)";
     await c.ExecuteAsync(
-        "INSERT INTO sd.ai_analiz_log (surec_no, analiz_turu, baslik, sonuc_metni, model_bilgisi) VALUES (@surecNo, 'llmsuite', 'LLM Suite (MCP) SD Yorumu', @yanit, @model)",
-        new { surecNo, yanit = r.Yanit, model });
-    return Results.Ok(new { yanit = r.Yanit, model, sureMs = r.SureMs, sessionId = r.SessionId });
+        "INSERT INTO sd.ai_analiz_log (surec_no, analiz_turu, baslik, sonuc_metni, model_bilgisi) VALUES (@surecNo, 'llmsuite', @baslik, @yanit, @model)",
+        new { surecNo, baslik = logBaslik, yanit = r.Yanit, model });
+    return Results.Ok(new { yanit = r.Yanit, model, sureMs = r.SureMs, sessionId = r.SessionId, baslik = logBaslik });
 });
 
 // ---- İçe Aktarma ----
@@ -250,12 +251,15 @@ api.MapGet("/talepler", async (string? ara, string? durum, string? kontrolDurumu
           AND (CAST(@ara AS text) IS NULL OR t.belge_no ILIKE CAST(@like AS text) OR t.sd_belge_no ILIKE CAST(@like AS text)
                OR CAST(t.surec_no AS TEXT) ILIKE CAST(@like AS text)
                OR t.talep_eden_ad_soyad ILIKE CAST(@like AS text) OR t.crm_teklif_no ILIKE CAST(@like AS text)
+               OR t.siparis_veren ILIKE CAST(@like AS text) OR t.sozlesme_adi ILIKE CAST(@like AS text)
                OR EXISTS (SELECT 1 FROM sd.talep_kalem k2 WHERE k2.surec_no = t.surec_no AND k2.malzeme_no ILIKE CAST(@like AS text)))
         ORDER BY t.belge_tarihi DESC NULLS LAST",
         new { ara = a, like = a == null ? null : $"%{a}%", durum = dFiltre })).ToList();
 
     var kalemler = (await c.QueryAsync("SELECT * FROM sd.talep_kalem ORDER BY surec_no, kalem_no, id")).ToList();
     var onaylar = (await c.QueryAsync("SELECT * FROM sd.talep_onay")).ToDictionary(x => (long)x.surec_no, x => x);
+    var aiSayilari = (await c.QueryAsync("SELECT surec_no, COUNT(*)::int AS adet FROM sd.ai_analiz_log GROUP BY surec_no"))
+        .ToDictionary(x => (long)x.surec_no, x => (int)x.adet);
 
     var kalemGrup = kalemler
         .GroupBy(k => (long)k.surec_no)
@@ -303,6 +307,10 @@ api.MapGet("/talepler", async (string? ara, string? durum, string? kontrolDurumu
             siparis_turu = (string?)t.siparis_turu,
             crm_teklif_no = (string?)t.crm_teklif_no,
             aselsan_sozlesme_no = (string?)t.aselsan_sozlesme_no,
+            sozlesme_adi = (string?)t.sozlesme_adi,
+            siparis_veren = (string?)t.siparis_veren,
+            mali_teslim_alan = (string?)t.mali_teslim_alan,
+            sas_no = (string?)t.sas_no,
             talep_eden = (string?)(t.talep_eden_ad_soyad ?? t.ad_soyad),
             talep_eden_departman = (string?)t.talep_eden_departman,
             orijinal_sozlesme_tutari = (decimal?)t.orijinal_sozlesme_tutari,
@@ -317,6 +325,8 @@ api.MapGet("/talepler", async (string? ara, string? durum, string? kontrolDurumu
             kirmizi_sayisi = kontrol.KirmiziSayisi,
             turuncu_sayisi = kontrol.TuruncuSayisi,
             sari_sayisi = kontrol.SariSayisi,
+            onecikan_bulgu = kontrol.Bulgular.FirstOrDefault()?.Baslik,
+            ai_yorum_sayisi = aiSayilari.TryGetValue(sno, out var aCnt) ? aCnt : 0,
             onay_durumu = onayDurum ?? "Bekliyor",
             va01_acildi_mi = (bool?)(onay?.va01_acildi_mi) ?? false,
             girilen_sd_no = (string?)onay?.girilen_sd_no
@@ -466,38 +476,76 @@ api.MapGet("/talepler/{surecNo:long}/va01-script.vbs", async (long surecNo, SdVa
     return Results.File(bytes, "text/vbscript", $"VA01_Taslak_{surecNo}.vbs");
 });
 
-// ---- AI 1: Akıllı SD Talep Denetçisi ----
-api.MapPost("/talepler/{surecNo:long}/ai-denetim", async (long surecNo, SdAiService ai) =>
+// ---- AI 1: Akıllı SD Talep Denetçisi (Bağımsız veya Şartname Kural Setli) ----
+api.MapPost("/talepler/{surecNo:long}/ai-denetim", async (long surecNo, HttpRequest req, SdAiService ai) =>
 {
     await using var c = Db();
     var (talep, kalemler, onay) = await GetTalepTamAsync(c, surecNo);
     if (talep == null) return Results.NotFound(new { hata = "Talep bulunamadı." });
 
-    var kontrol = SdRuleEngine.Degerlendir(talep, kalemler, (string?)onay?.onay_durumu);
-    var sys = @"Sen ASELSAN UGES TYM SAP SD (Satış ve Dağıtım) Kıdemli Uzman Denetçisisin.
+    AiDenetimIstekDto? istek = null;
+    try
+    {
+        if (req.ContentLength is > 0)
+            istek = await JsonSerializer.DeserializeAsync<AiDenetimIstekDto>(req.Body, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+    }
+    catch { }
+
+    bool kurallariDahilEt = istek?.KurallariDahilEt ?? false;
+    string sys;
+    string veriOzeti;
+    var jsonOpt = new JsonSerializerOptions
+    {
+        WriteIndented = true,
+        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+    };
+
+    if (!kurallariDahilEt)
+    {
+        sys = @"Sen deneyimli bir SAP SD (Satış ve Dağıtım), ERP veri kalitesi ve ticari sipariş analistisin.
+Sana yalnızca veritabanındaki ham SD talep başlığı ve kalem verileri veriliyor; herhangi bir hazır iç kural listesi dayatılmamaktadır.
+Kendi SAP SD, sözleşme, fiyatlandırma, teslimat ve lojistik bilginle verileri özgürce incele:
+- Boş, eksik veya birbiriyle çelişen alanları,
+- Tarih, miktar, birim fiyat, para birimi, muhatap ve kalem yapısındaki dikkat çekici noktaları,
+- SAP VA01 girişi öncesinde tamamlanması veya teyit edilmesi faydalı olacak pratik önerileri paylaş.
+Yanıtını Türkçe, okunması keyifli Markdown başlıkları (##), kalın vurgular (**), gerekirse özet tablolar ve anlamlı simge/emojilerle (✅, ⚠️, 🔴, 📌, 💡 vb.) zenginleştirerek yaz.";
+
+        veriOzeti = JsonSerializer.Serialize(new
+        {
+            talep = talep.Where(kv => kv.Key != "ham_veri").ToDictionary(k => k.Key, v => v.Value),
+            kalemler = kalemler.Select(k => k.Where(kv => kv.Key != "ham_veri").ToDictionary(x => x.Key, v => v.Value))
+        }, jsonOpt);
+    }
+    else
+    {
+        var kontrol = SdRuleEngine.Degerlendir(talep, kalemler, (string?)onay?.onay_durumu);
+        sys = @"Sen ASELSAN UGES TYM SAP SD (Satış ve Dağıtım) Kıdemli Uzman Denetçisisin.
 Görevin, SAP VA01 ekranında SD siparişi açılmadan önce talep başlığını, kalem yapısını ve sistemin bulduğu kural uyarılarını UGES TYM SD Giriş Şartnamesi'ne göre analiz etmektir.
 Özellikle şu noktalara dikkat et:
 1) HIZMET / SOZLESME BEDELI gibi sanal kalemler ile fiziksel teslimat kalemlerinin ayrımı, alt kalem (Üst Kalem) bağlantılarının MRP/BOM patlamasına etkisi,
 2) Kalem tipleri (Y210 bedelli, Y21F bedelsiz alt kalem, TAS/TAD vb.) ile birim fiyat ve garanti sürelerinin tutarlılığı,
 3) Hazır Edim Tarihi ile Teslim Tarihi arasındaki kabul marjının makullüğü (ÜPM MIP onayı gereksinimi),
 4) CRM Teklif No, Sözleşme İmza Tarihi, Muhataplar ve PYP öğelerinin tamlığı.
-Yanıtını Türkçe, net maddeler halinde: '1. Kritik Bulgular', '2. Kalem & BOM Yapısı Değerlendirmesi', '3. VA01 Giriş Öncesi Önerilen Aksiyonlar' başlıklarıyla kısa ve uygulanabilir yaz.";
+Yanıtını Türkçe, Markdown başlıkları (##), kalın vurgular (**), tablolar ve anlamlı simge/emojilerle (✅, ⚠️, 🔴, 📌, 💡) net şekilde yaz.";
 
-    var veriOzeti = JsonSerializer.Serialize(new
-    {
-        talep = talep.Where(kv => kv.Key != "ham_veri").ToDictionary(k => k.Key, v => v.Value),
-        kalemler = kalemler.Select(k => k.Where(kv => kv.Key != "ham_veri").ToDictionary(x => x.Key, v => v.Value)),
-        kuralMotoru = kontrol
-    }, new JsonSerializerOptions { WriteIndented = true });
+        veriOzeti = JsonSerializer.Serialize(new
+        {
+            talep = talep.Where(kv => kv.Key != "ham_veri").ToDictionary(k => k.Key, v => v.Value),
+            kalemler = kalemler.Select(k => k.Where(kv => kv.Key != "ham_veri").ToDictionary(x => x.Key, v => v.Value)),
+            kuralMotoru = kontrol
+        }, jsonOpt);
+    }
 
-    var (yanit, model, hata) = await ai.TamamlaAsync(sys, $"Aşağıdaki SD talebini denetle:\n{veriOzeti}");
+    var ek = string.IsNullOrWhiteSpace(istek?.EkTalimat) ? "" : $"\n\nEk odak/talimat: {istek.EkTalimat}";
+    var (yanit, model, hata) = await ai.TamamlaAsync(sys, $"Aşağıdaki SD talebini incele:{ek}\n{veriOzeti}");
     if (hata != null) return Results.BadRequest(new { hata });
 
+    var logBaslik = kurallariDahilEt ? "AI Denetimi (Şartname Kural Setli)" : "AI Yorumu (Bağımsız / Kuralsız)";
     await c.ExecuteAsync(
-        "INSERT INTO sd.ai_analiz_log (surec_no, analiz_turu, baslik, sonuc_metni, model_bilgisi) VALUES (@surecNo, 'denetim', 'AI Uzman SD Denetimi', @yanit, @model)",
-        new { surecNo, yanit, model });
+        "INSERT INTO sd.ai_analiz_log (surec_no, analiz_turu, baslik, sonuc_metni, model_bilgisi) VALUES (@surecNo, 'denetim', @baslik, @yanit, @model)",
+        new { surecNo, baslik = logBaslik, yanit, model });
 
-    return Results.Ok(new { yanit, model });
+    return Results.Ok(new { yanit, model, baslik = logBaslik });
 });
 
 // ---- AI 2: Sözleşme / PO Metni ↔ SD Talep Çapraz Kıyaslama ----
@@ -615,5 +663,6 @@ app.Run();
 public record OnayIstekDto(bool Onayla, string? Onaylayan, string? IstisnaNotu, string? GirilenSdNo);
 public record MailTaslakIstekDto(string? Hedef, string? EkNot);
 public record LlmSuiteAyarDto(string? BaseUrl, string? FlowId, string? ApiKey, int? TimeoutSec, string? ChatInputId, bool? SslDogrula, string? AiApiUrl, string? AiApiKey, string? AiModel, string? McpPublicUrl);
-public record LlmSuiteAnalizDto(string? EkTalimat, bool VeriyiEkle, string? OzelPrompt);
+public record LlmSuiteAnalizDto(string? EkTalimat, bool VeriyiEkle, string? OzelPrompt, bool KurallariDahilEt = false);
+public record AiDenetimIstekDto(bool KurallariDahilEt = false, string? EkTalimat = null);
 public record McpAracDeneDto(string Name, string? ArgumentsJson);
