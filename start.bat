@@ -36,13 +36,18 @@ for /f "usebackq tokens=1,* delims==" %%A in (".env") do (
 )
 
 if not defined BACKEND_PORT set "BACKEND_PORT=5100"
+if not defined MCP_PORT set "MCP_PORT=5101"
 if not defined DB_HOST set "DB_HOST=localhost"
 if not defined DB_PORT set "DB_PORT=5432"
 if not defined DB_NAME set "DB_NAME=ud_kokpit"
 if not defined DB_SCHEMA set "DB_SCHEMA=sd"
 
+for /f "delims=" %%I in ('powershell -NoProfile -Command "(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254*' } | Select-Object -First 1 -ExpandProperty IPAddress)"') do set "LOCAL_IP=%%I"
+if not defined LOCAL_IP set "LOCAL_IP=localhost"
+
 echo         Veritabani : !DB_HOST!:!DB_PORT! / !DB_NAME! ^(Sema: !DB_SCHEMA!^)
-echo         Uygulama   : http://localhost:!BACKEND_PORT!
+echo         Web Ekrani : http://localhost:!BACKEND_PORT!
+echo         MCP Sunucu : http://!LOCAL_IP!:!MCP_PORT!/sse  ^(veya /mcp — LLM Suite MCP Tools icin^)
 echo.
 
 :: 2) Standalone Exe Kontrolu (SD\app\SdKontrol.API.exe)
@@ -106,7 +111,8 @@ echo [BILGI] SD klasorunde !XLSX_COUNT! adet Excel ^(.xlsx^) raporu bulundu.
 
 echo.
 echo ============================================================================
-echo   STANDALONE SUNUCU BASLATILIYOR -> http://localhost:!BACKEND_PORT!
+echo   WEB UYGULAMASI BASLATILIYOR -> http://localhost:!BACKEND_PORT!
+echo   BAGIMSIZ MCP SUNUCUSU AKTIF -> http://!LOCAL_IP!:!MCP_PORT!/sse  ^(/mcp^)
 echo   ^(Kapatmak icin bu pencereyi kapatabilir veya Ctrl+C yapabilirsiniz^)
 echo ============================================================================
 echo.

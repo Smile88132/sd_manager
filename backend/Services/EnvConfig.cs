@@ -117,4 +117,47 @@ public sealed class EnvConfig
     public string AiApiUrl => Get("AI_API_URL", "");
     public string AiApiKey => Get("AI_API_KEY", "");
     public string AiModel => Get("AI_MODEL", "");
+
+    // --- MCP Sunucusu (LLM Suite Flow 'MCP Tools' bileşeninin bağlanacağı bağımsız port) ---
+    public int McpPort => GetInt("MCP_PORT", 5101);
+    public string McpApiKey => Get("MCP_API_KEY", "");
+    public string McpPublicUrl => Get("MCP_PUBLIC_URL", "");
+    public bool McpSqlEnabled => !Get("MCP_SQL_ENABLED", "true").Equals("false", StringComparison.OrdinalIgnoreCase);
+
+    // --- ASELSAN LLM Suite Flow (Langflow) ---
+    public string LlmSuiteBaseUrl => Get("LLMSUITE_BASE_URL", "https://llmsuiteflow.aiplatform.aselsan.com.tr");
+    public string LlmSuiteFlowId => Get("LLMSUITE_FLOW_ID", "");
+    public string LlmSuiteApiKey => Get("LLMSUITE_API_KEY", "");
+    public int LlmSuiteTimeoutSec => GetInt("LLMSUITE_TIMEOUT_SEC", 300);
+    public string LlmSuiteChatInputId => Get("LLMSUITE_CHAT_INPUT_ID", "");
+    public bool LlmSuiteSslDogrula => !Get("LLMSUITE_SSL_DOGRULA", "true").Equals("false", StringComparison.OrdinalIgnoreCase);
+
+    private static readonly object WriteLock = new();
+
+    /// <summary>Ayarı hem bellekte hem SD/.env dosyasında günceller (anahtar yoksa dosya sonuna ekler).</summary>
+    public void Set(string key, string? value)
+    {
+        var v = (value ?? "").Replace("\r", "").Replace("\n", "").Trim();
+        lock (WriteLock)
+        {
+            _env[key] = v;
+            var lines = File.Exists(EnvFilePath) ? File.ReadAllLines(EnvFilePath).ToList() : new List<string>();
+            var found = false;
+            for (int i = 0; i < lines.Count; i++)
+            {
+                var t = lines[i].TrimStart();
+                if (t.StartsWith('#')) continue;
+                var idx = t.IndexOf('=');
+                if (idx <= 0) continue;
+                if (string.Equals(t[..idx].Trim(), key, StringComparison.OrdinalIgnoreCase))
+                {
+                    lines[i] = $"{key}={v}";
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) lines.Add($"{key}={v}");
+            File.WriteAllLines(EnvFilePath, lines);
+        }
+    }
 }

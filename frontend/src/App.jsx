@@ -52,7 +52,296 @@ const BOS_VA01 = {
   zorlaKalemTipi: false,
 };
 
-function TalepDetay({ surecNo, health, onClose, onRefresh }) {
+const ASELIXAI_MODELLER = [
+  'Qwen3-Next-80B-A3B-Instruct',
+  'Qwen3.6-Flash-Next-FP8',
+  'DeepSeek-V4.1-Flash-1017',
+  'openai/gpt-oss-120b',
+  'gemma-4-31B-it',
+  'Qwen3-VL-8B-Instruct',
+];
+
+function LlmSuiteMcpModal({ onClose, onSaved }) {
+  const [durum, setDurum] = useState(null);
+  const [form, setForm] = useState({
+    baseUrl: 'https://llmsuiteflow.aiplatform.aselsan.com.tr',
+    flowId: '',
+    apiKey: '',
+    timeoutSec: 300,
+    chatInputId: '',
+    sslDogrula: true,
+    aiApiUrl: 'https://api.aselixai.aselsan.com.tr/v1',
+    aiApiKey: '',
+    aiModel: 'Qwen3-Next-80B-A3B-Instruct',
+    mcpPublicUrl: '',
+  });
+  const [modeller, setModeller] = useState(ASELIXAI_MODELLER);
+  const [testSonuc, setTestSonuc] = useState(null);
+  const [mcpOnizleme, setMcpOnizleme] = useState('');
+  const [ornekSurec, setOrnekSurec] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    api.llmSuiteDurum()
+      .then((d) => {
+        setDurum(d);
+        setForm({
+          baseUrl: d.llmSuite?.baseUrl || 'https://llmsuiteflow.aiplatform.aselsan.com.tr',
+          flowId: d.llmSuite?.flowId || '',
+          apiKey: d.llmSuite?.apiKeyMaskeli || '',
+          timeoutSec: d.llmSuite?.timeoutSec || 300,
+          chatInputId: d.llmSuite?.chatInputId || '',
+          sslDogrula: d.llmSuite?.sslDogrula ?? true,
+          aiApiUrl: d.direktAi?.apiUrl || 'https://api.aselixai.aselsan.com.tr/v1',
+          aiApiKey: d.direktAi?.apiKeyMaskeli || '',
+          aiModel: d.direktAi?.model || 'Qwen3-Next-80B-A3B-Instruct',
+          mcpPublicUrl: '',
+        });
+      })
+      .catch((e) => toast.error(e.message));
+  }, []);
+
+  const setF = (k, v) => setForm((p) => ({ ...p, [k]: v }));
+
+  const kaydet = async () => {
+    setBusy(true);
+    try {
+      const r = await api.llmSuiteAyarlarKaydet({
+        ...form,
+        timeoutSec: Number(form.timeoutSec) || 300,
+      });
+      toast.success(r.mesaj || 'Ayarlar kaydedildi.');
+      const guncel = await api.llmSuiteDurum();
+      setDurum(guncel);
+      onSaved?.();
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const baglantiTest = async () => {
+    setBusy(true);
+    setTestSonuc(null);
+    try {
+      await api.llmSuiteAyarlarKaydet({ ...form, timeoutSec: Number(form.timeoutSec) || 300 });
+      const r = await api.llmSuiteTest();
+      setTestSonuc({ ok: true, metin: r.yanit || 'Bağlantı başarılı!', sureMs: r.sureMs });
+      toast.success('ASELSAN LLM Suite Flow bağlantısı başarılı!');
+      onSaved?.();
+    } catch (e) {
+      setTestSonuc({ ok: false, metin: e.message });
+      toast.error(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const canliModelleriGetir = async () => {
+    setBusy(true);
+    try {
+      const r = await api.llmModeller(form.aiApiUrl, form.aiApiKey);
+      if (r.modeller?.length) {
+        setModeller(r.modeller);
+        toast.success(`${r.modeller.length} aktif model /models uç noktasından yüklendi.`);
+      }
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const mcpDene = async (aracAdi) => {
+    setBusy(true);
+    try {
+      const args = aracAdi === 'sd_talep_listesi'
+        ? { limit: 10 }
+        : { surec_no: Number(ornekSurec) || 0 };
+      const r = await api.mcpAracDene(aracAdi, args);
+      setMcpOnizleme(r.metin || '');
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const kopyala = (txt, baslik = 'Kopyalandı') => {
+    navigator.clipboard.writeText(txt || '');
+    toast.success(baslik);
+  };
+
+  const mcp = durum?.mcp;
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+        <div className="panel-head" style={{ borderRadius: 8, marginBottom: 12, background: '#fff' }}>
+          <div>
+            <h2 style={{ fontSize: 15 }}>⚙ ASELSAN LLM Suite Flow & Bağımsız MCP Sunucusu Ayarları</h2>
+            <span className="muted">MCP sunucusu start.bat ile ayrı portta otomatik çalışır; LLM Suite Flow içindeki MCP Tools bileşeninden bağlanır.</span>
+          </div>
+          <button className="btn" onClick={onClose}>Kapat ✕</button>
+        </div>
+
+        {/* 1. Bağımsız MCP Sunucu Bilgileri */}
+        <div className="panel">
+          <div className="panel-head">
+            <h2>1. Bağımsız SD MCP Sunucusu (Port: {mcp?.port || '...' })</h2>
+            <span className="badge green">✓ Aktif — DataFrame & SQL Hazır</span>
+          </div>
+          <div style={{ padding: 14, display: 'grid', gap: 10 }}>
+            <div>
+              <div style={{ fontWeight: 700, marginBottom: 4 }}>LLM Suite Flow → "MCP Tools" Bileşenine Girilecek Adresler:</div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 6 }}>
+                <span className="badge blue">SSE URL</span>
+                <span className="code-pill">{mcp?.sseUrl || '...'}</span>
+                <button className="btn" onClick={() => kopyala(mcp?.sseUrl, 'SSE URL kopyalandı')}>Kopyala</button>
+              </div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                <span className="badge gray">Streamable HTTP</span>
+                <span className="code-pill">{mcp?.streamableUrl || '...'}</span>
+                <button className="btn" onClick={() => kopyala(mcp?.streamableUrl, 'Streamable HTTP URL kopyalandı')}>Kopyala</button>
+                {mcp?.langflowJson && (
+                  <button className="btn" onClick={() => kopyala(mcp.langflowJson, 'Langflow MCP JSON kopyalandı')}>
+                    📋 Langflow MCP JSON Kopyala
+                  </button>
+                )}
+              </div>
+              {mcp?.alternatifUrller?.length > 1 && (
+                <div className="muted" style={{ marginTop: 6, fontSize: 11.5 }}>
+                  Alternatif ağ adresleri: {mcp.alternatifUrller.join(' · ')}
+                </div>
+              )}
+            </div>
+
+            <div>
+              <div style={{ fontWeight: 700, marginBottom: 4 }}>Sunulan MCP Araçları ({mcp?.araclar?.length || 0}):</div>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
+                {(mcp?.araclar || []).map((a) => (
+                  <span key={a} className="badge blue" style={{ fontFamily: 'Consolas, monospace' }}>{a}</span>
+                ))}
+              </div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                <button className="btn" disabled={busy} onClick={() => mcpDene('sd_talep_listesi')}>
+                  ▶ Canlı Test: sd_talep_listesi
+                </button>
+                <input
+                  placeholder="Örnek süreç no (örn: 20609365)"
+                  value={ornekSurec}
+                  onChange={(e) => setOrnekSurec(e.target.value)}
+                  style={{ width: 190 }}
+                />
+                <button className="btn" disabled={busy || !ornekSurec} onClick={() => mcpDene('sd_kalemler_dataframe')}>
+                  ▶ sd_kalemler_dataframe (JSON DataFrame)
+                </button>
+                <button className="btn" disabled={busy || !ornekSurec} onClick={() => mcpDene('sd_eksik_alan_analizi')}>
+                  ▶ sd_eksik_alan_analizi
+                </button>
+              </div>
+              {mcpOnizleme && (
+                <div className="ai-box" style={{ marginTop: 8, maxHeight: 200 }}>{mcpOnizleme}</div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* 2. ASELSAN LLM Suite Flow Ayarları */}
+        <div className="panel">
+          <div className="panel-head">
+            <h2>2. ASELSAN LLM Suite Flow API Bağlantısı (/api/v1/run/&#123;flowId&#125;)</h2>
+            <span className="muted">Akıştaki Chat Output yorumunu SD ekranına çeker</span>
+          </div>
+          <div className="form-grid">
+            <label>
+              Base URL
+              <input value={form.baseUrl} onChange={(e) => setF('baseUrl', e.target.value)} placeholder="https://llmsuiteflow.aiplatform.aselsan.com.tr" />
+            </label>
+            <label>
+              Flow ID (veya Endpoint Name)
+              <input value={form.flowId} onChange={(e) => setF('flowId', e.target.value)} placeholder="c16ecc83-ff64-4fc7-bb52-0f594beaf70a" />
+            </label>
+            <label>
+              API Key (x-api-key)
+              <input type="password" value={form.apiKey} onChange={(e) => setF('apiKey', e.target.value)} placeholder="sk-..." />
+            </label>
+            <label>
+              Zaman Aşımı (sn — MCP + Agent için 300 önerilir)
+              <input type="number" min={30} max={1800} value={form.timeoutSec} onChange={(e) => setF('timeoutSec', e.target.value)} />
+            </label>
+            <label>
+              ChatInput Bileşen ID (Standart akış için boş bırakın!)
+              <input value={form.chatInputId} onChange={(e) => setF('chatInputId', e.target.value)} placeholder="Boş bırakın (400 hatasını önler)" />
+            </label>
+            <label style={{ justifyContent: 'center' }}>
+              <span>Kurumsal SSL Sertifikası</span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 500, marginTop: 6 }}>
+                <input type="checkbox" checked={!form.sslDogrula} onChange={(e) => setF('sslDogrula', !e.target.checked)} />
+                İç ağ SSL sertifika doğrulamasını esnet
+              </span>
+            </label>
+          </div>
+          {testSonuc && (
+            <div style={{ padding: '0 14px 12px' }}>
+              <div className={`rule-item ${testSonuc.ok ? '' : 'Kirmizi'}`} style={testSonuc.ok ? { borderLeftColor: '#059669', background: '#ecfdf5' } : undefined}>
+                <h4>{testSonuc.ok ? `✓ Bağlantı Başarılı (${testSonuc.sureMs || 0} ms)` : '✕ Bağlantı Hatası'}</h4>
+                <p style={{ whiteSpace: 'pre-wrap' }}>{testSonuc.metin}</p>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* 3. Doğrudan ASELSAN AI (aselixai) Model & Endpoint Ayarları */}
+        <div className="panel">
+          <div className="panel-head">
+            <h2>3. Doğrudan ASELSAN AI (aselixai) Modelleri (Denetim / Sözleşme / Mail Araçları İçin)</h2>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <button className="btn" type="button" onClick={() => setF('aiApiUrl', 'https://api.aselixai.aselsan.com.tr/v1')}>
+                Milli Ağ URL
+              </button>
+              <button className="btn" type="button" onClick={() => setF('aiApiUrl', 'https://agate.aselsan.com.tr/send/milli/api.aselixai/v1')}>
+                Aynet Ağı URL
+              </button>
+              <button className="btn" type="button" disabled={busy} onClick={canliModelleriGetir}>
+                ↻ /models Listele
+              </button>
+            </div>
+          </div>
+          <div className="form-grid">
+            <label>
+              AI API URL (/chat/completions, /models, /rerank, /embeddings)
+              <input value={form.aiApiUrl} onChange={(e) => setF('aiApiUrl', e.target.value)} placeholder="https://api.aselixai.aselsan.com.tr/v1" />
+            </label>
+            <label>
+              Aktif Model Seçimi
+              <input list="aselixai-models" value={form.aiModel} onChange={(e) => setF('aiModel', e.target.value)} placeholder="Qwen3-Next-80B-A3B-Instruct" />
+              <datalist id="aselixai-models">
+                {modeller.map((m) => <option key={m} value={m} />)}
+              </datalist>
+            </label>
+            <label>
+              AI API Key (Bearer)
+              <input type="password" value={form.aiApiKey} onChange={(e) => setF('aiApiKey', e.target.value)} placeholder="Bearer API Key..." />
+            </label>
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          <button className="btn" disabled={busy} onClick={baglantiTest}>
+            ⚡ LLM Suite Bağlantısını Test Et
+          </button>
+          <button className="btn primary" disabled={busy} onClick={kaydet}>
+            💾 Ayarları Kaydet (.env)
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TalepDetay({ surecNo, health, onClose, onRefresh, onOpenSettings }) {
   const [data, setData] = useState(null);
   const [sekme, setSekme] = useState('kontrol');
   const [istisnaNotu, setIstisnaNotu] = useState('');
@@ -60,8 +349,11 @@ function TalepDetay({ surecNo, health, onClose, onRefresh }) {
   const [girilenSdNo, setGirilenSdNo] = useState('');
   const [busy, setBusy] = useState(false);
 
-  // AI state
+  // AI & LLM Suite (MCP) state
   const [aiCikti, setAiCikti] = useState('');
+  const [aiBaslik, setAiBaslik] = useState('AI / LLM Suite Çıktısı');
+  const [llmEkTalimat, setLlmEkTalimat] = useState('');
+  const [llmVeriyiEkle, setLlmVeriyiEkle] = useState(false);
   const [sozMetin, setSozMetin] = useState('');
   const [sozFile, setSozFile] = useState(null);
   const [mailHedef, setMailHedef] = useState('talep_eden');
@@ -127,10 +419,42 @@ function TalepDetay({ surecNo, health, onClose, onRefresh }) {
     finally { setBusy(false); }
   };
 
+  const calistirLlmSuiteMcp = async () => {
+    setBusy(true);
+    try {
+      const r = await api.llmSuiteAnaliz(surecNo, {
+        ekTalimat: llmEkTalimat,
+        veriyiEkle: llmVeriyiEkle,
+      });
+      setAiBaslik(`ASELSAN LLM Suite (MCP) Yorumu — ${(r.sureMs / 1000).toFixed(1)} sn`);
+      setAiCikti(r.yanit);
+      toast.success('LLM Suite (MCP) SD yorumu alındı!');
+      yukle();
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onizleMcpDataFrame = async () => {
+    setBusy(true);
+    try {
+      const r = await api.mcpAracDene('sd_talep_dataframe', { surec_no: surecNo, format: 'markdown' });
+      setAiBaslik(`MCP DataFrame Önizleme (sd_talep_dataframe — Süreç ${surecNo})`);
+      setAiCikti(r.metin || '');
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const calistirAiDenetim = async () => {
     setBusy(true);
     try {
       const r = await api.aiDenetim(surecNo);
+      setAiBaslik(`AI Uzman Denetimi (${r.model || ''})`);
       setAiCikti(r.yanit);
       toast.success('AI uzman denetimi tamamlandı.');
       yukle();
@@ -237,7 +561,7 @@ function TalepDetay({ surecNo, health, onClose, onRefresh }) {
             2. Başlık & Kalem Detayları ({kalemler.length})
           </button>
           <button className={`tab ${sekme === 'ai' ? 'active' : ''}`} onClick={() => setSekme('ai')}>
-            3. Yapay Zeka (Denetim / Sözleşme / Mail)
+            3. LLM Suite (MCP) & AI Yorum
           </button>
           <button className={`tab ${sekme === 'va01' ? 'active' : ''}`} onClick={() => setSekme('va01')}>
             4. SAP VA01 Aç & Doldur (Kaydetmeden)
@@ -383,16 +707,57 @@ function TalepDetay({ surecNo, health, onClose, onRefresh }) {
           <>
             <div className="panel">
               <div className="panel-head">
-                <h2>Yapay Zeka Destek Araçları (UGES TYM Şartname Uzmanı)</h2>
+                <h2>ASELSAN LLM Suite (MCP DataFrame) & Yapay Zeka SD Yorum Merkezi</h2>
+                <button className="btn" onClick={onOpenSettings}>
+                  ⚙ LLM Suite & MCP Ayarları (:{health?.mcpPort || 5101})
+                </button>
               </div>
-              <div style={{ padding: 14, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 12 }}>
+
+              {/* Ana Özellik: LLM Suite Flow + MCP DataFrame Yorumlayıcı */}
+              <div className="llmsuite-hero">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
+                  <div>
+                    <h3 style={{ margin: 0, fontSize: 14, color: '#1e3a8a' }}>
+                      ✦ ASELSAN LLM Suite Flow — MCP DataFrame ile Eksik & Tutarsızlık Yorumu
+                    </h3>
+                    <small className="muted" style={{ color: '#475569' }}>
+                      LLM Suite akışındaki Agent, bağımsız MCP portundan (<code>:{health?.mcpPort || 5101}</code>) bu sürecin başlık + kalem DataFrame verisini ve eksik alan analizini çekerek eksiklikleri telafi edici yorum üretir.
+                    </small>
+                  </div>
+                  <span className={`badge ${health?.llmSuiteHazir ? 'green' : 'amber'}`}>
+                    {health?.llmSuiteHazir ? '✓ Flow Bağlı' : '⚠ Flow ID / API Key Girin'}
+                  </span>
+                </div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 8 }}>
+                  <input
+                    style={{ flex: '1 1 320px' }}
+                    placeholder="Opsiyonel ek soru/odak (Örn: Benzer geçmiş siparişlere göre ödeme koşulu ve PYP yapısını da yorumla)..."
+                    value={llmEkTalimat}
+                    onChange={(e) => setLlmEkTalimat(e.target.value)}
+                  />
+                  <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600 }}>
+                    <input type="checkbox" checked={llmVeriyiEkle} onChange={(e) => setLlmVeriyiEkle(e.target.checked)} />
+                    DataFrame'i mesaja da göm (MCP erişimi yoksa yedek)
+                  </label>
+                </div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <button className="btn primary" disabled={busy} onClick={calistirLlmSuiteMcp}>
+                    {busy ? 'LLM Suite yanıtı bekleniyor...' : '🚀 LLM Suite (MCP) Yorumunu Getir'}
+                  </button>
+                  <button className="btn" disabled={busy} onClick={onizleMcpDataFrame}>
+                    📊 MCP DataFrame Çıktısını Önizle
+                  </button>
+                </div>
+              </div>
+
+              <div style={{ padding: '0 14px 14px', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(290px, 1fr))', gap: 12 }}>
                 <div className="panel" style={{ margin: 0, padding: 12 }}>
-                  <h4 style={{ margin: '0 0 6px' }}>1. Akıllı Kalem & BOM / Hizmet Denetimi</h4>
+                  <h4 style={{ margin: '0 0 6px' }}>1. Doğrudan Model Denetimi (aselixai)</h4>
                   <p className="muted" style={{ margin: '0 0 10px', whiteSpace: 'normal' }}>
                     HIZMET vs fiziksel teslimat ayrımını, alt kalem bağlantılarını, kalem tiplerini ve hazır edim marjını şartnameye göre yorumlar.
                   </p>
                   <button className="btn primary" disabled={busy} onClick={calistirAiDenetim}>
-                    {busy ? 'Analiz ediliyor...' : '✦ AI Uzman Denetimi Çalıştır'}
+                    {busy ? 'Analiz ediliyor...' : '✦ Hızlı AI Denetimi Çalıştır'}
                   </button>
                 </div>
 
@@ -433,13 +798,46 @@ function TalepDetay({ surecNo, health, onClose, onRefresh }) {
 
               {aiCikti && (
                 <div style={{ padding: '0 14px 14px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
-                    <b>AI Çıktısı</b>
-                    <button className="btn" onClick={() => { navigator.clipboard.writeText(aiCikti); toast.success('Panoya kopyalandı.'); }}>
-                      Kopyala
-                    </button>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 6 }}>
+                    <b>{aiBaslik}</b>
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      <button
+                        className="btn"
+                        onClick={() => {
+                          setIstisnaNotu((prev) => (prev ? `${prev}\n${aiCikti.slice(0, 500)}` : aiCikti.slice(0, 500)));
+                          setSekme('kontrol');
+                          toast.success('Yorum özeti İstisna / Kontrol Notu alanına aktarıldı.');
+                        }}
+                      >
+                        ↳ Kontrol Notuna Aktar
+                      </button>
+                      <button className="btn" onClick={() => { navigator.clipboard.writeText(aiCikti); toast.success('Panoya kopyalandı.'); }}>
+                        Kopyala
+                      </button>
+                    </div>
                   </div>
                   <div className="ai-box">{aiCikti}</div>
+                </div>
+              )}
+
+              {data.aiGecmis?.length > 0 && (
+                <div style={{ padding: '0 14px 14px' }}>
+                  <div style={{ fontWeight: 700, marginBottom: 6 }}>Kaydedilen Yorum Geçmişi ({data.aiGecmis.length})</div>
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                    {data.aiGecmis.map((g) => (
+                      <button
+                        key={g.id}
+                        className="btn"
+                        onClick={() => {
+                          setAiBaslik(`${g.baslik} (${g.model_bilgisi || ''})`);
+                          setAiCikti(g.sonuc_metni);
+                        }}
+                      >
+                        {g.analiz_turu?.startsWith('llmsuite') ? '🤖 ' : '✦ '}
+                        {g.baslik} · {fmtDate(g.olusturuldu)}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>
@@ -677,6 +1075,7 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [uyarilar, setUyarilar] = useState([]);
   const [secili, setSecili] = useState(null);
+  const [ayarAcik, setAyarAcik] = useState(false);
   const fileRef = useRef(null);
 
   const yukle = useCallback(async () => {
@@ -729,10 +1128,15 @@ export default function App() {
           <small>
             DB: <b>{health?.dbHost || '...'} / {health?.veritabani || '...'}</b> (şema: <b>{health?.sema || 'sd'}</b>) ·
             Python: {health?.pythonMevcut ? '✓ Hazır' : '⚠ Kontrol Edin'} ·
-            SAP GUI: {health?.sapGuiMevcut ? `✓ ${health.sapBaglanti}` : '⚠ Yok (.vbs modu aktif)'}
+            SAP GUI: {health?.sapGuiMevcut ? `✓ ${health.sapBaglanti}` : '⚠ Yok (.vbs modu aktif)'} ·
+            MCP Sunucusu: <b>✓ :{health?.mcpPort || 5101}</b> ·
+            LLM Suite: {health?.llmSuiteHazir ? '✓ Hazır' : '⚠ Ayarlayın'}
           </small>
         </div>
         <div className="toolbar">
+          <button className="btn light" onClick={() => setAyarAcik(true)}>
+            ⚙ LLM Suite & MCP (:{health?.mcpPort || 5101})
+          </button>
           <button className="btn light" disabled={busy} onClick={klasordenAktar} title={health?.veriKlasoru}>
             {busy ? 'Aktarılıyor...' : '↻ SD Klasöründen İçe Aktar'}
           </button>
@@ -851,7 +1255,16 @@ export default function App() {
         </div>
       </div>
 
-      {secili && <TalepDetay surecNo={secili} health={health} onClose={() => setSecili(null)} onRefresh={yukle} />}
+      {secili && (
+        <TalepDetay
+          surecNo={secili}
+          health={health}
+          onClose={() => setSecili(null)}
+          onRefresh={yukle}
+          onOpenSettings={() => setAyarAcik(true)}
+        />
+      )}
+      {ayarAcik && <LlmSuiteMcpModal onClose={() => setAyarAcik(false)} onSaved={yukle} />}
     </div>
   );
 }

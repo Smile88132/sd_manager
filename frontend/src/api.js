@@ -51,6 +51,31 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     }),
+  // ASELSAN LLM Suite Flow + Bağımsız MCP Sunucusu
+  llmSuiteDurum: () => request('/llmsuite/durum'),
+  llmSuiteAyarlarKaydet: (body) =>
+    request('/llmsuite/ayarlar', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  llmSuiteTest: () => request('/llmsuite/test', { method: 'POST' }),
+  llmSuiteAnaliz: (surecNo, body) =>
+    request(`/talepler/${surecNo}/llmsuite-analiz`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}),
+    }),
+  llmModeller: (apiUrl = '', apiKey = '') => {
+    const q = new URLSearchParams(Object.entries({ apiUrl, apiKey }).filter(([, v]) => v));
+    return request(`/llm/modeller${q.toString() ? `?${q}` : ''}`);
+  },
+  mcpAracDene: (name, argumentsObj = {}) =>
+    request('/mcp/arac-dene', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, argumentsJson: JSON.stringify(argumentsObj) }),
+    }),
   importKlasor: () => request('/import/klasor', { method: 'POST' }),
   importYukle: (files) => {
     const fd = new FormData();

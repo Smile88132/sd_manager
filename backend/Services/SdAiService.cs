@@ -21,7 +21,7 @@ public sealed class SdAiService
     {
         _env = env;
         _http = http;
-        _http.Timeout = TimeSpan.FromSeconds(75);
+        _http.Timeout = TimeSpan.FromSeconds(180);
         _logger = logger;
     }
 
@@ -124,7 +124,7 @@ public sealed class SdAiService
             {
                 model,
                 temperature = 0.25,
-                max_tokens = 2048,
+                max_tokens = 4096,
                 messages = new[]
                 {
                     new { role = "system", content = systemPrompt },
@@ -138,8 +138,11 @@ public sealed class SdAiService
                 return (null, model, $"AI servis hatası ({(int)res.StatusCode}): {body[..Math.Min(body.Length, 400)]}");
 
             using var doc = JsonDocument.Parse(body);
-            var ans = doc.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString();
-            return (ans?.Trim(), $"{cfg.Provider}/{model}", null);
+            var msgEl = doc.RootElement.GetProperty("choices")[0].GetProperty("message");
+            var ans = msgEl.TryGetProperty("content", out var cp) ? cp.GetString() : null;
+            if (!string.IsNullOrWhiteSpace(ans))
+                ans = Regex.Replace(ans, @"<think>.*?</think>", "", RegexOptions.Singleline).Trim();
+            return (ans, $"{cfg.Provider}/{model}", null);
         }
         catch (Exception ex)
         {

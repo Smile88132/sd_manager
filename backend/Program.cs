@@ -13,11 +13,14 @@ var builder = Directory.Exists(exeWebRoot)
     : WebApplication.CreateBuilder(args);
 
 var envCfg = new EnvConfig(builder.Environment);
-builder.WebHost.UseUrls($"http://0.0.0.0:{envCfg.BackendPort}");
+// Ana uygulama (UI + API) ve LLM Suite için bağımsız MCP sunucusu portu aynı exe içinde ayrı portlarda dinlenir
+builder.WebHost.UseUrls($"http://0.0.0.0:{envCfg.BackendPort}", $"http://0.0.0.0:{envCfg.McpPort}");
 
 builder.Services.AddSingleton(envCfg);
 builder.Services.AddSingleton<SdImportService>();
 builder.Services.AddSingleton<SdVa01Service>();
+builder.Services.AddSingleton<SdMcpServer>();
+builder.Services.AddSingleton<LlmSuiteService>();
 builder.Services.AddHttpClient<SdAiService>();
 
 var frontendOrigin = $"http://localhost:{envCfg.FrontendPort}";
@@ -32,6 +35,11 @@ var app = builder.Build();
 var cs = envCfg.ConnectionString;
 
 await SchemaInitializer.EnsureAsync(cs, app.Logger);
+
+// ---- MCP PORTU: Bu porta gelen TÜM istekler yalnızca MCP sunucusuna yönlenir (UI/API bu portta sunulmaz) ----
+var mcpServer = app.Services.GetRequiredService<SdMcpServer>();
+var mcpPort = envCfg.McpPort;
+app.MapWhen(ctx => ctx.Connection.LocalPort == mcpPort, branch => branch.Run(mcpServer.DispatchAsync));
 
 app.UseCors();
 app.UseDefaultFiles();
@@ -81,8 +89,117 @@ api.MapGet("/health", async () =>
         pythonExe = envCfg.PythonExe,
         pythonMevcut = File.Exists(envCfg.PythonExe),
         sapGuiMevcut = File.Exists(envCfg.SapLogonPath),
-        sapBaglanti = envCfg.SapConnection
+        sapBaglanti = envCfg.SapConnection,
+        mcpPort = envCfg.McpPort,
+        llmSuiteHazir = !string.IsNullOrWhiteSpace(envCfg.LlmSuiteFlowId) && !string.IsNullOrWhiteSpace(envCfg.LlmSuiteApiKey)
     });
+});
+
+// ---- ASELSAN LLM Suite Flow + MCP Ayar / Durum ----
+static string Maskele(string? s) => string.IsNullOrWhiteSpace(s) ? "" : s.Length <= 8 ? "••••" : $"{s[..4]}••••{s[^4..]}";
+
+api.MapGet("/llmsuite/durum", (SdMcpServer mcp) => Results.Ok(new
+{
+    llmSuite = new
+    {
+        baseUrl = envCfg.LlmSuiteBaseUrl,
+        flowId = envCfg.LlmSuiteFlowId,
+        apiKeyMaskeli = Maskele(envCfg.LlmSuiteApiKey),
+        apiKeyVar = !string.IsNullOrWhiteSpace(envCfg.LlmSuiteApiKey),
+        timeoutSec = envCfg.LlmSuiteTimeoutSec,
+        chatInputId = envCfg.LlmSuiteChatInputId,
+        sslDogrula = envCfg.LlmSuiteSslDogrula
+    },
+    direktAi = new
+    {
+        apiUrl = envCfg.AiApiUrl,
+        model = envCfg.AiModel,
+        apiKeyMaskeli = Maskele(envCfg.AiApiKey),
+        apiKeyVar = !string.IsNullOrWhiteSpace(envCfg.AiApiKey)
+    },
+    mcp = mcp.BaglantiBilgisi()
+}));
+
+api.MapPost("/llmsuite/ayarlar", (LlmSuiteAyarDto dto) =>
+{
+    void SetIf(string key, string? val, bool gizli = false)
+    {
+        if (val == null) return;
+        if (gizli && val.Contains('•')) return; // maskeli değer geri gönderildiyse değiştirme
+        envCfg.Set(key, val);
+    }
+    SetIf("LLMSUITE_BASE_URL", dto.BaseUrl);
+    SetIf("LLMSUITE_FLOW_ID", dto.FlowId);
+    SetIf("LLMSUITE_API_KEY", dto.ApiKey, gizli: true);
+    if (dto.TimeoutSec is > 0) envCfg.Set("LLMSUITE_TIMEOUT_SEC", dto.TimeoutSec.Value.ToString());
+    SetIf("LLMSUITE_CHAT_INPUT_ID", dto.ChatInputId);
+    if (dto.SslDogrula.HasValue) envCfg.Set("LLMSUITE_SSL_DOGRULA", dto.SslDogrula.Value ? "true" : "false");
+    SetIf("AI_API_URL", dto.AiApiUrl);
+    SetIf("AI_API_KEY", dto.AiApiKey, gizli: true);
+    SetIf("AI_MODEL", dto.AiModel);
+    SetIf("MCP_PUBLIC_URL", dto.McpPublicUrl);
+    if (!string.IsNullOrWhiteSpace(dto.AiApiUrl) && string.IsNullOrWhiteSpace(envCfg.AiProvider)) envCfg.Set("AI_PROVIDER", "ASELSAN AI");
+    return Results.Ok(new { mesaj = "Ayarlar SD/.env dosyasına kaydedildi." });
+});
+
+api.MapPost("/llmsuite/test", async (LlmSuiteService llm, CancellationToken ct) =>
+{
+    var r = await llm.CalistirAsync(
+        "Bağlantı testi: Kısaca 'LLM Suite bağlantısı başarılı' yaz ve erişebildiğin MCP araçlarının adlarını madde madde listele.",
+        null, ct, timeoutSec: Math.Min(envCfg.LlmSuiteTimeoutSec, 180));
+    return r.Ok ? Results.Ok(r) : Results.BadRequest(new { hata = r.Hata, ham = r.HamYanit });
+});
+
+api.MapGet("/llm/modeller", async (string? apiUrl, string? apiKey, LlmSuiteService llm, CancellationToken ct) =>
+{
+    var url = string.IsNullOrWhiteSpace(apiUrl) ? envCfg.AiApiUrl : apiUrl;
+    var key = string.IsNullOrWhiteSpace(apiKey) || apiKey.Contains('•') ? envCfg.AiApiKey : apiKey;
+    if (string.IsNullOrWhiteSpace(url)) return Results.BadRequest(new { hata = "AI API URL boş (örn: https://api.aselixai.aselsan.com.tr/v1)." });
+    var (modeller, hata) = await llm.ModelleriGetirAsync(url, key, ct);
+    return hata == null ? Results.Ok(new { modeller }) : Results.BadRequest(new { hata });
+});
+
+api.MapGet("/mcp/araclar", async (SdMcpServer mcp, CancellationToken ct) =>
+{
+    var r = await mcp.IsleAsync(new System.Text.Json.Nodes.JsonObject { ["jsonrpc"] = "2.0", ["id"] = 1, ["method"] = "tools/list" }, ct);
+    return Results.Content(r?.ToJsonString() ?? "{}", "application/json");
+});
+
+api.MapPost("/mcp/arac-dene", async (McpAracDeneDto dto, SdMcpServer mcp, CancellationToken ct) =>
+{
+    var args = System.Text.Json.Nodes.JsonNode.Parse(string.IsNullOrWhiteSpace(dto.ArgumentsJson) ? "{}" : dto.ArgumentsJson) as System.Text.Json.Nodes.JsonObject ?? new();
+    var r = await mcp.IsleAsync(new System.Text.Json.Nodes.JsonObject
+    {
+        ["jsonrpc"] = "2.0", ["id"] = 1, ["method"] = "tools/call",
+        ["params"] = new System.Text.Json.Nodes.JsonObject { ["name"] = dto.Name, ["arguments"] = args }
+    }, ct);
+    var text = r?["result"]?["content"]?[0]?["text"]?.GetValue<string>() ?? r?.ToJsonString();
+    return Results.Ok(new { metin = text });
+});
+
+// ---- LLM Suite: SD Süreci için MCP destekli yorum üret ve ekrana getir ----
+api.MapPost("/talepler/{surecNo:long}/llmsuite-analiz", async (long surecNo, LlmSuiteAnalizDto dto, LlmSuiteService llm, SdMcpServer mcp, CancellationToken ct) =>
+{
+    await using var c = Db();
+    var var_ = await c.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM sd.talep WHERE surec_no = @surecNo", new { surecNo })
+             + await c.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM sd.talep_kalem WHERE surec_no = @surecNo", new { surecNo });
+    if (var_ == 0) return Results.NotFound(new { hata = "Talep bulunamadı." });
+
+    var mesaj = string.IsNullOrWhiteSpace(dto.OzelPrompt)
+        ? LlmSuiteService.VarsayilanPrompt(surecNo, dto.EkTalimat)
+        : dto.OzelPrompt.Replace("{surec_no}", surecNo.ToString());
+
+    if (dto.VeriyiEkle)
+        mesaj += "\n\n---\n[MCP erişimi yoksa kullanılacak SD VERİSİ (DataFrame)]\n" + await mcp.SatirIciVeriAsync(surecNo);
+
+    var r = await llm.CalistirAsync(mesaj, $"uges-sd-{surecNo}-{DateTime.Now:yyyyMMddHHmmss}", ct);
+    if (!r.Ok) return Results.BadRequest(new { hata = r.Hata, ham = r.HamYanit, sureMs = r.SureMs });
+
+    var model = $"ASELSAN LLM Suite Flow{(string.IsNullOrWhiteSpace(r.Model) ? "" : $" / {r.Model}")}";
+    await c.ExecuteAsync(
+        "INSERT INTO sd.ai_analiz_log (surec_no, analiz_turu, baslik, sonuc_metni, model_bilgisi) VALUES (@surecNo, 'llmsuite', 'LLM Suite (MCP) SD Yorumu', @yanit, @model)",
+        new { surecNo, yanit = r.Yanit, model });
+    return Results.Ok(new { yanit = r.Yanit, model, sureMs = r.SureMs, sessionId = r.SessionId });
 });
 
 // ---- İçe Aktarma ----
@@ -490,7 +607,13 @@ app.MapFallbackToFile("index.html");
 
 app.Logger.LogInformation("[SD] UGES SD Kontrol Standalone Uygulaması: http://localhost:{Port} (Swagger: /swagger) — DB: {Host}/{Db} (şema: {Schema})",
     envCfg.BackendPort, envCfg.DbHost, envCfg.DbName, envCfg.DbSchema);
+app.Logger.LogInformation("[MCP] LLM Suite MCP Sunucusu: http://{Ip}:{Port}/sse (SSE) ve /mcp (Streamable HTTP){Auth}",
+    SdMcpServer.YerelIpAdresleri().FirstOrDefault() ?? "localhost", envCfg.McpPort,
+    string.IsNullOrWhiteSpace(envCfg.McpApiKey) ? "" : " — x-api-key gerekli");
 app.Run();
 
 public record OnayIstekDto(bool Onayla, string? Onaylayan, string? IstisnaNotu, string? GirilenSdNo);
 public record MailTaslakIstekDto(string? Hedef, string? EkNot);
+public record LlmSuiteAyarDto(string? BaseUrl, string? FlowId, string? ApiKey, int? TimeoutSec, string? ChatInputId, bool? SslDogrula, string? AiApiUrl, string? AiApiKey, string? AiModel, string? McpPublicUrl);
+public record LlmSuiteAnalizDto(string? EkTalimat, bool VeriyiEkle, string? OzelPrompt);
+public record McpAracDeneDto(string Name, string? ArgumentsJson);

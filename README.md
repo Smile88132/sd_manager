@@ -1,28 +1,32 @@
-# UGES SD Kontrol & SAP VA01 Hazırlık Sistemi
+# UGES SD Kontrol & SAP VA01 Hazırlık Sistemi (+ ASELSAN LLM Suite MCP Sunucusu)
 
-UGESUD Kokpit'ten **bağımsız** çalışan, aynı PostgreSQL veritabanında yalnızca **`sd`** şemasını kullanan SAP SD giriş öncesi talep kontrol, AI denetim ve `VA01` taslak doldurma uygulaması.
+UGESUD Kokpit'ten **bağımsız** çalışan, aynı PostgreSQL veritabanında yalnızca **`sd`** şemasını kullanan SAP SD giriş öncesi talep kontrol, **ASELSAN LLM Suite Flow (MCP DataFrame)** yorumlama ve `VA01` taslak doldurma uygulaması.
 
 ## Tek Tıkla Başlatma (`start.bat`)
-`SD\start.bat` dosyasına çift tıkladığınızda:
-1. `SD\.env` dosyasını kontrol eder (yoksa `.env.example`'dan oluşturur),
-2. `.NET 8 SDK`, `Node.js`, `PYTHON_EXE` + `pywin32`, `SAP GUI` (`saplogon.exe`) ve `PostgreSQL` erişimini test edip ekrana yansıtır,
-3. Backend'i derler ve hem Backend (`5100`) hem Frontend (`3100`) sunucularını başlatıp tarayıcıda açar.
+`SD\start.bat` dosyasına çift tıkladığınızda (hedef bilgisayarda `.NET SDK` veya `Node.js` gerektirmez):
+1. `SD\.env` dosyasını kontrol eder, PostgreSQL / Python / SAP GUI erişimini doğrular,
+2. Ana Web Uygulamasını **`BACKEND_PORT` (varsayılan `5100`)** üzerinde başlatır,
+3. Aynı süreç içinde **bağımsız bir portta (`MCP_PORT`, varsayılan `5101`)** **UGES SD MCP Sunucusunu** ayağa kaldırır:
+   - **SSE Uç Noktası:** `http://<BILGISAYAR_IP>:5101/sse`
+   - **Streamable HTTP Uç Noktası:** `http://<BILGISAYAR_IP>:5101/mcp`
 
-## Yapılandırma (`SD/.env`)
-- `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_SCHEMA=sd`
-- `PYTHON_EXE` — SAP GUI Scripting (`pywin32`) kurulu Python tam yolu
-- `SAP_LOGON_PATH`, `SAP_CONNECTION=KKP CANLI`, `SAP_CLIENT=500`, `SAP_LANGUAGE=TR`, `SAP_DEFAULT_SPART=10`
-- `AI_PROVIDER`, `AI_API_URL`, `AI_API_KEY`, `AI_MODEL` *(boş bırakılırsa Kokpit veritabanındaki `ai_config` otomatik kullanılır)*
+## ASELSAN LLM Suite Flow ↔ MCP Entegrasyonu
+1. **LLM Suite Flow (`MCP Tools` bileşeni):**
+   - MCP Server URL olarak üst menüdeki **⚙ LLM Suite & MCP (`:5101`)** penceresinde gösterilen `http://<IP>:5101/sse` (veya `/mcp`) adresini girin.
+   - `MCP Tools` bileşenini `Toolset` modunda **`LLM Agent` → `Tools`** girişine bağlayın (veya tekil araç olarak `sd_kalemler_dataframe` seçip `Type Convert -> DataFrame` üzerinden bağlayın).
+   - **Sunulan MCP Araçları:**
+     - `sd_talep_dataframe(surec_no, format)` — Başlık + Kalem DataFrame (Markdown tablo + JSON records / CSV) + Kural bulguları
+     - `sd_kalemler_dataframe(surec_no)` — Başlık + Kalem + Eksik alanlar birleşik düz JSON DataFrame (`records`)
+     - `sd_eksik_alan_analizi(surec_no)` — Boş/eksik başlık ve kalem alanları, tarih/tutar/HIZMET tutarsızlıkları ve telafi önerileri
+     - `sd_kural_kontrolu(surec_no)` — UGES TYM SD Giriş Şartnamesi kural motoru çıktısı
+     - `sd_talep_listesi(kontrol_durumu, ara, limit)` — Tüm SD taleplerinin özet DataFrame'i
+     - `sd_sql_sorgu(sql, limit)` — `sd` şemasında salt okunur (`READ ONLY`) PostgreSQL `SELECT` sorgusu
+     - `sd_yorum_kaydet(surec_no, yorum, baslik)` — Üretilen yorumu doğrudan `sd.ai_analiz_log` tablosuna kaydeder
+2. **SD Ekranından Yorum Alma:**
+   - Üst çubuktaki **⚙ LLM Suite & MCP** ekranından `Base URL` (`https://llmsuiteflow.aiplatform.aselsan.com.tr`), `Flow ID` ve `API Key (x-api-key)` bilgilerini kaydedin.
+   - Herhangi bir SD talebinin **3. LLM Suite (MCP) & AI Yorum** sekmesinde **🚀 LLM Suite (MCP) Yorumunu Getir** butonuna tıkladığınızda akış tetiklenir, LLM Agent MCP üzerinden veritabanındaki SD verilerini DataFrame olarak çekip yorumlar ve Chat çıktısı doğrudan ekrana gelir.
 
-## Özellikler
-1. **Şartname Kural Motoru (`SdRuleEngine`):**
-   - 🔴 **Kırmızı (Engel):** CRM Teklif No boş, kalemsiz talep, malzeme/miktar boş, Hazır Edim > Teslim Tarihi.
-   - 🟠 **Turuncu (Uyarı):** ASELSAN Sözleşme No eksik/yer tutucu (`SS`), geçmiş yıl sözleşme imza tarihi (GSSYM onayı), eksik muhataplar.
-   - 🟡 **Sarı (Uyarı):** Hazır Edim == Teslim Tarihi (aynı gün), **HIZMET / sanal üst kaleme malzeme alt kalem bağlanması**, `SOZLESME BEDELI` sanal stok, PYP/İç Sipariş boşluğu, sözleşme tutarı ↔ kalem toplamı farkı.
-2. **İstisna Onayı (`sd.talep_onay`):** Kırmızı engeli olmayan talepler açıklama notuyla onaylanarak `VA01` kilidi açılır.
-3. **Yapay Zeka Araçları (`SdAiService`):**
-   - Akıllı Kalem & BOM / Hizmet Denetçisi
-   - Sözleşme / PO (`.docx` / `.txt` / metin) ↔ SD Talep Çapraz Kontrolü
-   - Talep Sahibi / ÜPM MIP / PKD / GSSYM için tek tıkla e-posta taslağı
-4. **SAP `VA01` Aç & Doldur (`SdVa01Service` + `python/va01_fill.py`):**
-   - Açık SAP oturumunu yakalar veya ekrandan anlık alınan SAP kullanıcı/şifresiyle (diske/DB'ye yazmadan) `KKP CANLI` açar, `/nVA01` alanlarını doldurur ve **`Ctrl+S` (Kaydet) yapmadan** ekranı kullanıcıya bırakır. Ayrıca uzak PC/VDI için şifresiz `.vbs` taslak scripti indirilebilir.
+## Doğrudan ASELSAN AI (`aselixai`) Modelleri
+- **Milli Ağ:** `https://api.aselixai.aselsan.com.tr/v1`
+- **Aynet Ağı:** `https://agate.aselsan.com.tr/send/milli/api.aselixai/v1`
+- **Desteklenen Sohbet/Muhakeme Modelleri:** `Qwen3-Next-80B-A3B-Instruct`, `Qwen3.6-Flash-Next-FP8`, `DeepSeek-V4.1-Flash-1017`, `openai/gpt-oss-120b`, `gemma-4-31B-it`, `Qwen3-VL-8B-Instruct`.
